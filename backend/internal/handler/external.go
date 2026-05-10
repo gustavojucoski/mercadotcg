@@ -180,6 +180,9 @@ func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 			if info.TCGPlayerID != "" {
 				sourceExternalIDs[pricing.SourceTCGPlayer] = info.TCGPlayerID
 			}
+			if info.ID != "" {
+				sourceExternalIDs[pricing.SourceEbay] = info.ID
+			}
 			catalogInfo = &info
 		}
 	}

@@ -53,7 +53,7 @@ func newRouter(t *testing.T) *chi.Mux {
 	h := handler.NewExternalHandler(
 		ligapokemon.New(20*time.Second),
 		tcgplayer.New(20*time.Second),
-		ebay.New(20*time.Second, "", ""), // sem credenciais → ErrNotConfigured
+		ebay.New(20*time.Second),
 	).WithCatalog(catalog)
 
 	r := chi.NewRouter()
@@ -179,7 +179,7 @@ func TestExternalSearch_MegaDragoniteEx(t *testing.T) {
 		for _, res := range src.Results {
 			fmt.Printf("    %s %s %s — %s\n", res.Currency, res.Price, res.Condition, res.Title)
 		}
-		if src.Error != "" && src.Source != "ebay" { // ebay sem credenciais → ErrNotConfigured esperado
+		if src.Error != "" {
 			t.Errorf("[%s] erro inesperado: %s", src.Source, src.Error)
 		}
 	}

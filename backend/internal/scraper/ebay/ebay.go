@@ -1,26 +1,26 @@
-// Package ebay implements scraper.Source for eBay using the official
-// Browse API (OAuth2 client_credentials flow).
+// Package ebay implements scraper.Source for eBay using Scrydex as data source.
 //
 // Strategy:
-//  1. POST https://api.ebay.com/identity/v1/oauth2/token  → bearer token
-//  2. GET  https://api.ebay.com/buy/browse/v1/item_summary/search
-//         ?q=QUERY&category_ids=183454&limit=N
-//  3. Converts itemSummaries to []scraper.Result.
+//  1. Requires ExternalID in the Query — the pokemontcg.io card ID (e.g. "me2pt5-290").
+//  2. GET https://scrydex.com/pokemon/cards/x/{card-id}
+//     The slug segment is ignored by Scrydex; the card ID is what matters.
+//  3. Parses recent eBay sold prices embedded as data attributes in the HTML:
+//     data-company, data-grade, data-price, data-currency, data-sold-at.
+//  4. Groups by company+grade (e.g. "PSA 10", "BGS 9.5") and returns the
+//     lowest sold price per group, ordered by grade descending.
 //
-// Without clientID/certID the scraper returns ErrNotConfigured.
-// Register at https://developer.ebay.com to get free credentials.
+// No credentials required — Scrydex is a public price tracker.
 package ebay
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -30,31 +30,32 @@ import (
 )
 
 const (
-	ebayTokenURL  = "https://api.ebay.com/identity/v1/oauth2/token"
-	ebaySearchURL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-	ebayScope     = "https://api.ebay.com/oauth/api_scope"
-	pokemonCatID  = "183454" // Pokemon Individual Cards
-	userAgent     = "Mozilla/5.0 (compatible; MercadoTCG/1.0)"
+	scrydexBase = "https://scrydex.com"
+	userAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+	rowSep      = `data-sales-filter-target="row"`
 )
 
-// Client é o scraper eBay via Browse API.
-type Client struct {
-	http     *http.Client
-	clientID string
-	certID   string
+var (
+	reCompany  = regexp.MustCompile(`data-company="([^"]*)"`)
+	reGrade    = regexp.MustCompile(`data-grade="([^"]*)"`)
+	rePrice    = regexp.MustCompile(`data-price="([^"]*)"`)
+	reCurrency = regexp.MustCompile(`data-currency="([^"]*)"`)
+	reSoldAt   = regexp.MustCompile(`data-sold-at="(\d+)"`)
+	reEbayURL  = regexp.MustCompile(`href="(https://www\.ebay\.com/itm/[^"]+)"`)
+	reLinkText = regexp.MustCompile(`href="https://www\.ebay\.com/itm/[^"]*"[^>]*>([^<]+)</a>`)
+)
 
-	mu          sync.Mutex
-	cachedToken string
-	tokenExpiry time.Time
+// Client é o scraper eBay via Scrydex.
+type Client struct {
+	http    *http.Client
+	baseURL string
 }
 
-// New monta o client. clientID e certID vêm de EBAY_CLIENT_ID / EBAY_CLIENT_SECRET.
-// Se vazios, Search retorna ErrNotConfigured.
-func New(timeout time.Duration, clientID, certID string) *Client {
+// New cria o client. Não requer credenciais.
+func New(timeout time.Duration) *Client {
 	return &Client{
-		http:     &http.Client{Timeout: timeout},
-		clientID: clientID,
-		certID:   certID,
+		http:    &http.Client{Timeout: timeout},
+		baseURL: scrydexBase,
 	}
 }
 
@@ -62,78 +63,35 @@ func New(timeout time.Duration, clientID, certID string) *Client {
 func (c *Client) Name() pricing.Source { return pricing.SourceEbay }
 
 // Search implementa scraper.Source.
+//
+// Requer q.ExternalID com o pokemontcg.io card ID (ex: "me2pt5-290").
+// Sem ExternalID retorna lista vazia — sem ID não há como buscar no Scrydex.
 func (c *Client) Search(ctx context.Context, q scraper.Query) ([]scraper.Result, error) {
-	if c.clientID == "" || c.certID == "" {
-		return nil, scraper.ErrNotConfigured
-	}
-	if q.Name == "" {
-		return nil, errors.New("ebay: name obrigatório")
+	if q.ExternalID == "" {
+		return []scraper.Result{}, nil
 	}
 
-	token, err := c.getToken(ctx)
+	pageURL := fmt.Sprintf("%s/pokemon/cards/x/%s", c.baseURL, q.ExternalID)
+	body, err := c.fetchBody(ctx, pageURL)
 	if err != nil {
-		return nil, fmt.Errorf("ebay: autenticação: %w", err)
+		return nil, fmt.Errorf("ebay: scrydex: %w", err)
 	}
 
-	limit := q.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-
-	queryStr := strings.TrimSpace(q.Name)
-	if q.Number != "" {
-		queryStr += " " + q.Number
-	}
-	if !strings.Contains(strings.ToLower(queryStr), "pokemon") {
-		queryStr += " pokemon card"
-	}
-
-	params := url.Values{}
-	params.Set("q", queryStr)
-	params.Set("category_ids", pokemonCatID)
-	params.Set("limit", fmt.Sprintf("%d", limit))
-	params.Set("sort", "price")
-	searchURL := ebaySearchURL + "?" + params.Encode()
-
-	items, err := c.fetchItems(ctx, searchURL, token)
-	if err != nil {
-		return nil, err
-	}
-
-	results := convertItems(items)
-	if len(results) > limit {
-		results = results[:limit]
-	}
+	sales := parseSales(body)
+	results := cheapestPerGrade(sales, q.Name, pageURL)
 	return results, nil
 }
 
-// ─── OAuth2 token ─────────────────────────────────────────────────────────────
+// ─── HTTP ─────────────────────────────────────────────────────────────────────
 
-type tokenResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
-	TokenType   string `json:"token_type"`
-}
-
-func (c *Client) getToken(ctx context.Context) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.cachedToken != "" && time.Now().Before(c.tokenExpiry) {
-		return c.cachedToken, nil
-	}
-
-	body := url.Values{}
-	body.Set("grant_type", "client_credentials")
-	body.Set("scope", ebayScope)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ebayTokenURL, strings.NewReader(body.Encode()))
+func (c *Client) fetchBody(ctx context.Context, target string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return "", fmt.Errorf("build token request: %w", err)
+		return "", fmt.Errorf("build request: %w", err)
 	}
-	req.SetBasicAuth(c.clientID, c.certID)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -141,152 +99,182 @@ func (c *Client) getToken(ctx context.Context) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("token status %d: %s", resp.StatusCode, string(b))
-	}
-
-	var tr tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return "", fmt.Errorf("decode token: %w", err)
-	}
-
-	c.cachedToken = tr.AccessToken
-	// Renova 60s antes do vencimento para evitar race conditions.
-	c.tokenExpiry = time.Now().Add(time.Duration(tr.ExpiresIn-60) * time.Second)
-	return c.cachedToken, nil
-}
-
-// ─── Browse API ───────────────────────────────────────────────────────────────
-
-type browseResponse struct {
-	Total        int           `json:"total"`
-	ItemSummaries []browseItem `json:"itemSummaries"`
-}
-
-type browseItem struct {
-	ItemID     string     `json:"itemId"`
-	Title      string     `json:"title"`
-	Price      browsePrice `json:"price"`
-	ItemWebURL string     `json:"itemWebUrl"`
-	Image      struct {
-		ImageURL string `json:"imageUrl"`
-	} `json:"image"`
-	Condition   string `json:"condition"`
-	ConditionID string `json:"conditionId"`
-}
-
-type browsePrice struct {
-	Value    string `json:"value"`
-	Currency string `json:"currency"`
-}
-
-func (c *Client) fetchItems(ctx context.Context, searchURL, token string) ([]browseItem, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("ebay: build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("X-EBAY-C-MARKETPLACE-ID", "EBAY_US")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ebay: http: %w", err)
-	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ebay: status %d: %s", resp.StatusCode, string(b))
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", fmt.Errorf("status %d em %s", resp.StatusCode, target)
 	}
 
-	var br browseResponse
-	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
-		return nil, fmt.Errorf("ebay: decode: %w", err)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("ler body: %w", err)
 	}
-	return br.ItemSummaries, nil
+	return string(b), nil
 }
 
-// ─── Conversão ────────────────────────────────────────────────────────────────
+// ─── Parse ────────────────────────────────────────────────────────────────────
 
-func convertItems(items []browseItem) []scraper.Result {
-	results := make([]scraper.Result, 0, len(items))
-	seen := make(map[string]bool)
+type saleEntry struct {
+	company  string
+	grade    string
+	price    decimal.Decimal
+	currency pricing.Currency
+	soldAt   int64  // milliseconds unix
+	ebayURL  string
+	title    string
+}
 
-	for _, item := range items {
-		if item.Title == "" || seen[item.ItemWebURL] {
+// parseSales extrai todas as entradas de vendas recentes do HTML do Scrydex.
+func parseSales(html string) []saleEntry {
+	parts := strings.Split(html, rowSep)
+	if len(parts) < 2 {
+		return nil
+	}
+
+	entries := make([]saleEntry, 0, len(parts)-1)
+	for _, chunk := range parts[1:] {
+		company := extract(reCompany, chunk)
+		grade := extract(reGrade, chunk)
+		priceStr := extract(rePrice, chunk)
+		currStr := extract(reCurrency, chunk)
+		soldAtStr := extract(reSoldAt, chunk)
+
+		if company == "" || grade == "" || priceStr == "" {
 			continue
 		}
-		price, currency, ok := parseBrowsePrice(item.Price)
-		if !ok {
+
+		price, err := decimal.NewFromString(priceStr)
+		if err != nil || price.IsZero() {
 			continue
 		}
-		seen[item.ItemWebURL] = true
 
-		externalID := extractItemID(item.ItemID)
-		condition := normalizeCondition(item.Condition)
+		soldAt, _ := strconv.ParseInt(soldAtStr, 10, 64)
+		currency := parseCurrency(currStr)
+		ebayURL := extract(reEbayURL, chunk)
+		title := extract(reLinkText, chunk)
 
-		results = append(results, scraper.Result{
-			Title:        item.Title,
-			URL:          item.ItemWebURL,
-			ImageURL:     item.Image.ImageURL,
-			Price:        price,
-			Currency:     currency,
-			Kind:         pricing.KindListing,
-			Condition:    condition,
-			RawCondition: item.Condition,
-			ExternalID:   externalID,
+		entries = append(entries, saleEntry{
+			company:  company,
+			grade:    grade,
+			price:    price,
+			currency: currency,
+			soldAt:   soldAt,
+			ebayURL:  ebayURL,
+			title:    title,
 		})
 	}
+	return entries
+}
+
+// cheapestPerGrade agrupa por company+grade e devolve o menor preço de cada grupo.
+func cheapestPerGrade(sales []saleEntry, cardName, fallbackURL string) []scraper.Result {
+	type key struct{ company, grade string }
+	best := make(map[key]saleEntry)
+
+	for _, s := range sales {
+		k := key{s.company, s.grade}
+		if prev, ok := best[k]; !ok || s.price.LessThan(prev.price) {
+			best[k] = s
+		}
+	}
+
+	results := make([]scraper.Result, 0, len(best))
+	for k, s := range best {
+		rawCond := k.company + " " + k.grade
+		itemURL := s.ebayURL
+		if itemURL == "" {
+			itemURL = fallbackURL
+		}
+		title := s.title
+		if title == "" {
+			title = buildTitle(cardName, rawCond)
+		}
+
+		results = append(results, scraper.Result{
+			Title:        title,
+			URL:          itemURL,
+			Price:        s.price,
+			Currency:     s.currency,
+			Kind:         pricing.KindSale,
+			Condition:    gradeToCondition(k.grade),
+			RawCondition: rawCond,
+		})
+	}
+
+	// Ordena por company asc, depois grade desc (melhor grau primeiro).
+	sort.Slice(results, func(i, j int) bool {
+		ci := results[i].RawCondition
+		cj := results[j].RawCondition
+		pi := companyPriority(results[i])
+		pj := companyPriority(results[j])
+		if pi != pj {
+			return pi < pj
+		}
+		gi := gradeValue(strings.Fields(ci)[1])
+		gj := gradeValue(strings.Fields(cj)[1])
+		return gi > gj // grade maior primeiro
+	})
+
 	return results
 }
 
-func parseBrowsePrice(p browsePrice) (decimal.Decimal, pricing.Currency, bool) {
-	if p.Value == "" {
-		return decimal.Zero, "", false
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+func extract(re *regexp.Regexp, s string) string {
+	m := re.FindStringSubmatch(s)
+	if len(m) < 2 {
+		return ""
 	}
-	d, err := decimal.NewFromString(p.Value)
-	if err != nil || d.IsZero() {
-		return decimal.Zero, "", false
-	}
-	currency := pricing.CurrencyUSD
-	switch strings.ToUpper(p.Currency) {
-	case "EUR":
-		currency = pricing.CurrencyEUR
-	case "JPY":
-		currency = pricing.CurrencyJPY
-	case "BRL":
-		currency = pricing.CurrencyBRL
-	}
-	return d, currency, true
+	return strings.TrimSpace(m[1])
 }
 
-func normalizeCondition(raw string) string {
-	r := strings.ToUpper(strings.TrimSpace(raw))
+func parseCurrency(s string) pricing.Currency {
+	switch strings.ToUpper(s) {
+	case "EUR":
+		return pricing.CurrencyEUR
+	case "BRL":
+		return pricing.CurrencyBRL
+	case "JPY":
+		return pricing.CurrencyJPY
+	}
+	return pricing.CurrencyUSD
+}
+
+// gradeToCondition mapeia o número de grade para a condição aproximada.
+func gradeToCondition(grade string) string {
+	g := gradeValue(grade)
 	switch {
-	case strings.Contains(r, "BRAND NEW"), strings.Contains(r, "NEAR MINT"), r == "NM":
+	case g >= 9:
 		return string(pricing.ConditionNearMint)
-	case strings.Contains(r, "LIGHTLY"), strings.Contains(r, "LIGHT PLAY"), r == "LP":
+	case g >= 7.5:
 		return string(pricing.ConditionLightlyPlayed)
-	case strings.Contains(r, "MODERATELY"), strings.Contains(r, "MOD PLAY"), r == "MP":
+	case g >= 6:
 		return string(pricing.ConditionModeratelyPlayed)
-	case strings.Contains(r, "HEAVILY"), strings.Contains(r, "HEAVY PLAY"), r == "HP":
+	case g >= 4:
 		return string(pricing.ConditionHeavilyPlayed)
-	case strings.Contains(r, "DAMAGED"), r == "DMG", r == "POOR":
+	case g > 0:
 		return string(pricing.ConditionDamaged)
-	case strings.Contains(r, "GOOD"), strings.Contains(r, "VERY GOOD"):
-		return string(pricing.ConditionLightlyPlayed)
 	}
 	return ""
 }
 
-// extractItemID converte "v1|403791900150|0" → "403791900150".
-func extractItemID(raw string) string {
-	parts := strings.Split(raw, "|")
-	if len(parts) >= 2 {
-		return parts[1]
+func gradeValue(grade string) float64 {
+	g, _ := strconv.ParseFloat(grade, 64)
+	return g
+}
+
+var companyOrder = map[string]int{"PSA": 0, "BGS": 1, "CGC": 2, "ACE": 3, "TAG": 4}
+
+func companyPriority(r scraper.Result) int {
+	company := strings.Fields(r.RawCondition)[0]
+	if p, ok := companyOrder[company]; ok {
+		return p
 	}
-	return raw
+	return 99
+}
+
+func buildTitle(cardName, rawCond string) string {
+	if cardName == "" {
+		return "eBay · " + rawCond
+	}
+	return cardName + " · " + rawCond
 }

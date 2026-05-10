@@ -90,11 +90,11 @@ func main() {
 	// ---- Scrapers ------------------------------------------------------------
 	// LigaPokemon: HTML scraping sem credenciais.
 	// TCGplayer: pricepoints API pública (requer ExternalID no query).
-	// eBay: Browse API OAuth2 — sem credenciais devolve ErrNotConfigured.
+	// eBay: vendas via Scrydex — sem credenciais, usa ExternalID como pokemontcg.io card ID.
 	scrapers := []scraper.Source{
 		ligapokemon.New(12 * time.Second),
 		tcgplayer.New(12 * time.Second),
-		ebay.New(12*time.Second, cfg.EbayClientID, cfg.EbayClientSecret),
+		ebay.New(12 * time.Second),
 	}
 
 	// API v1
