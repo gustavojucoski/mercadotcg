@@ -70,6 +70,10 @@ func (c *Client) Name() pricing.Source { return pricing.SourceCardmarket }
 //     e.g. Pikachu ex SIR 276 → "…/Ascended-Heroes/Pikachu-ex-ASC276"
 //  2. Regular cards: set listing is fetched and the slug with matching number is found.
 //
+// When the base URL returns no article listings, Search retries automatically with
+// V-number suffixes (V1…V10), stopping at the first version that yields results.
+// This covers cards that Cardmarket splits into multiple product pages by version.
+//
 // Returns empty list when the URL cannot be found or bot protection blocks the request.
 func (c *Client) Search(ctx context.Context, q scraper.Query) ([]scraper.Result, error) {
 	target := q.ExternalID
@@ -80,13 +84,54 @@ func (c *Client) Search(ctx context.Context, q scraper.Query) ([]scraper.Result,
 		return []scraper.Result{}, nil
 	}
 
-	body, err := c.fetchBody(ctx, target)
-	if err != nil {
-		return nil, fmt.Errorf("cardmarket: %w", err)
-	}
+	for attempt := 0; attempt <= 10; attempt++ {
+		if ctx.Err() != nil {
+			break
+		}
+		url := target
+		if attempt > 0 {
+			url = injectVersion(target, q.SetCode, attempt)
+		}
 
-	entries := parseArticles(body)
-	return cheapestPerCondition(entries, q.Name, target), nil
+		body, err := c.fetchBody(ctx, url)
+		if err != nil {
+			if attempt == 0 {
+				return nil, fmt.Errorf("cardmarket: %w", err)
+			}
+			break // context likely exhausted
+		}
+
+		entries := parseArticles(body)
+		if len(entries) > 0 {
+			return cheapestPerCondition(entries, q.Name, url), nil
+		}
+	}
+	return []scraper.Result{}, nil
+}
+
+// injectVersion inserts "-V{n}" into the card-page URL slug just before the
+// "-{SETCODE}" marker. If the set code is absent from the slug (e.g. ExternalID
+// from pokemontcg.io that omits set code+number), it appends "-V{n}" at the end.
+//
+// Examples:
+//
+//	".../Pikachu-ex-ASC276"  + setCode="ASC" + n=1  →  ".../Pikachu-ex-V1-ASC276"
+//	".../Charizard-VMAX"     + setCode="SSH" + n=2  →  ".../Charizard-VMAX-V2"
+func injectVersion(target, setCode string, n int) string {
+	slash := strings.LastIndex(target, "/")
+	if slash < 0 {
+		return fmt.Sprintf("%s-V%d", target, n)
+	}
+	base := target[:slash+1]
+	slug := target[slash+1:]
+
+	if setCode != "" {
+		marker := "-" + strings.ToUpper(setCode)
+		if idx := strings.Index(strings.ToUpper(slug), marker); idx >= 0 {
+			return base + slug[:idx] + fmt.Sprintf("-V%d", n) + slug[idx:]
+		}
+	}
+	return base + slug + fmt.Sprintf("-V%d", n)
 }
 
 // resolveTarget picks the right Cardmarket product URL for q when ExternalID is absent.

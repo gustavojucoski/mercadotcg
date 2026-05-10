@@ -27,6 +27,7 @@ type Config struct {
 	EbayClientID        string
 	EbayClientSecret    string
 	PokemonTCGAPIKey    string // opcional, aumenta rate limit do importador.
+	PokeWalletAPIKey    string // pokewallet.io — TCGPlayer + Cardmarket via API.
 	FlareSolverrURL     string // ex: "http://localhost:8191". Vazio = sem bypass.
 }
 
@@ -58,6 +59,7 @@ func Load() (Config, error) {
 	cfg.EbayClientID = os.Getenv("EBAY_CLIENT_ID")
 	cfg.EbayClientSecret = os.Getenv("EBAY_CLIENT_SECRET")
 	cfg.PokemonTCGAPIKey = os.Getenv("POKEMON_TCG_API_KEY")
+	cfg.PokeWalletAPIKey = os.Getenv("POKEWALLET_API_KEY")
 	cfg.FlareSolverrURL = os.Getenv("FLARESOLVERR_URL")
 
 	return cfg, nil

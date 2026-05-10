@@ -1,6 +1,9 @@
 package cardmarket
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestSlugContainsNumber(t *testing.T) {
 	cases := []struct {
@@ -65,6 +68,50 @@ func TestParseCardNumber(t *testing.T) {
 		got := parseCardNumber(c.s)
 		if got != c.want {
 			t.Errorf("parseCardNumber(%q) = %d, want %d", c.s, got, c.want)
+		}
+	}
+}
+
+func TestInjectVersion(t *testing.T) {
+	const base = "https://www.cardmarket.com/en/Pokemon/Products/Singles"
+	cases := []struct {
+		target, setCode string
+		n               int
+		want            string
+	}{
+		// Set code present in slug → insert before -SETCODE
+		{base + "/Ascended-Heroes/Pikachu-ex-ASC276", "ASC", 1, base + "/Ascended-Heroes/Pikachu-ex-V1-ASC276"},
+		{base + "/Ascended-Heroes/Pikachu-ex-ASC276", "ASC", 3, base + "/Ascended-Heroes/Pikachu-ex-V3-ASC276"},
+		{base + "/Ascended-Heroes/Pikachu-ex-ASC057", "ASC", 2, base + "/Ascended-Heroes/Pikachu-ex-V2-ASC057"},
+		// n=10
+		{base + "/Ascended-Heroes/Pikachu-ex-ASC276", "ASC", 10, base + "/Ascended-Heroes/Pikachu-ex-V10-ASC276"},
+		// Set code absent from slug → append at end
+		{base + "/Sword-Shield/Charizard-VMAX", "SSH", 1, base + "/Sword-Shield/Charizard-VMAX-V1"},
+		// Empty set code → append
+		{base + "/Sword-Shield/Charizard-VMAX", "", 2, base + "/Sword-Shield/Charizard-VMAX-V2"},
+	}
+	for _, c := range cases {
+		got := injectVersion(c.target, c.setCode, c.n)
+		if got != c.want {
+			t.Errorf("injectVersion(target, %q, %d)\n  got  %q\n  want %q",
+				c.setCode, c.n, got, c.want)
+		}
+	}
+}
+
+// Verify that injectVersion produces distinct URLs for V1..V10 (no collisions).
+func TestInjectVersionDistinct(t *testing.T) {
+	target := "https://www.cardmarket.com/en/Pokemon/Products/Singles/Ascended-Heroes/Pikachu-ex-ASC276"
+	seen := map[string]int{}
+	for n := 1; n <= 10; n++ {
+		u := injectVersion(target, "ASC", n)
+		if prev, ok := seen[u]; ok {
+			t.Errorf("injectVersion collision: n=%d and n=%d produce same URL %q", prev, n, u)
+		}
+		seen[u] = n
+		want := fmt.Sprintf("https://www.cardmarket.com/en/Pokemon/Products/Singles/Ascended-Heroes/Pikachu-ex-V%d-ASC276", n)
+		if u != want {
+			t.Errorf("n=%d: got %q, want %q", n, u, want)
 		}
 	}
 }

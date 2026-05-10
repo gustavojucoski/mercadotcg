@@ -18,16 +18,14 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/gustavojucoski/mercadotcg/backend/internal/config"
-	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/pricing"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/forex"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/handler"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/repository/postgres"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper"
-	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/cardmarket"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ebay"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ligapokemon"
-	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/tcgplayer"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/pokewallet"
 	pricesvc "github.com/gustavojucoski/mercadotcg/backend/internal/service/pricing"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/service/pricesignal"
 )
@@ -91,24 +89,16 @@ func main() {
 
 	// ---- Scrapers ------------------------------------------------------------
 	// LigaPokemon: HTML scraping sem credenciais (BRL).
-	// TCGplayer: pricepoints API pública; ExternalID = product ID (USD).
-	// eBay: vendas via Scrydex; ExternalID = pokemontcg.io card ID (USD).
-	// Cardmarket: via FlareSolverr se FLARESOLVERR_URL configurado; caso contrário
-	//   tentativa direta (provavelmente 403) e fallback via pokemontcg.io (EUR).
-	const cmTimeout = 90 * time.Second // resolveFromSetListing faz 2 chamadas ao FlareSolverr (~26s total)
-	var cmScraper scraper.Source
-	if cfg.FlareSolverrURL != "" {
-		cmScraper = cardmarket.NewWithFlareSolverr(cmTimeout, cfg.FlareSolverrURL)
-		log.Info().Str("flaresolverr", cfg.FlareSolverrURL).Msg("Cardmarket usando FlareSolverr")
-	} else {
-		cmScraper = cardmarket.New(12 * time.Second)
-	}
+	// PokéWallet: API oficial pokewallet.io — cobre TCGPlayer (USD) e Cardmarket (EUR).
+	//   Uma chamada por carta, retornada para ambas as fontes via cache interno.
+	// eBay: vendas gradeadas via Scrydex; ExternalID = pokemontcg.io card ID (USD).
+	pwTCG, pwCM := pokewallet.New(cfg.PokeWalletAPIKey, 15*time.Second)
 
 	scrapers := []scraper.Source{
 		ligapokemon.New(12 * time.Second),
-		tcgplayer.New(12 * time.Second),
+		pwTCG,
+		pwCM,
 		ebay.New(12 * time.Second),
-		cmScraper,
 	}
 
 	// API v1
@@ -117,12 +107,7 @@ func main() {
 		handler.NewStoreHandler(storeRepo, stockRepo, signalSvc).Routes(r)
 		handler.NewVariantHandler(signalSvc).Routes(r)
 
-		extHandler := handler.NewExternalHandler(scrapers...).WithCatalog(ptcgClient)
-		if cfg.FlareSolverrURL != "" {
-			// FlareSolverr precisa de timeout maior — outras fontes têm 12s.
-			extHandler = extHandler.WithSourceTimeout(pricing.SourceCardmarket, cmTimeout)
-		}
-		extHandler.Routes(r)
+		handler.NewExternalHandler(scrapers...).WithCatalog(ptcgClient).Routes(r)
 	})
 
 	// Imprime as rotas no boot — útil pra você descobrir o que tem.

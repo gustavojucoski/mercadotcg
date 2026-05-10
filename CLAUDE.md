@@ -19,34 +19,55 @@ Diferenciais perseguidos:
 |---|---|
 | Backend | Go 1.22 (`chi`, `pgx/v5`, `shopspring/decimal`, `zerolog`) |
 | Banco | PostgreSQL via Supabase, migrations com `golang-migrate` |
-| Frontend | Next.js (App Router) + TypeScript + Tailwind CSS *(a inicializar)* |
-| Scrapers | Go com `goquery` *(a implementar por fonte)* |
+| Frontend | Next.js 16 (App Router) + TypeScript + Tailwind CSS 4 |
+| Scrapers | Go: `goquery` (LigaPokemon/eBay), pokewallet.io API (TCGPlayer+Cardmarket) |
 
 ## 3. Estrutura de Diretórios
 
 ```
 MercadoTCG/
 ├── CLAUDE.md
-└── backend/
-    ├── go.mod
-    ├── .env.example
-    ├── cmd/
-    │   ├── api/        # servidor HTTP (entrypoint principal)
-    │   ├── scraper/    # workers de coleta por fonte
-    │   └── migrate/    # CLI de migrations
-    ├── internal/
-    │   ├── domain/     # tipos puros (card, pricing, listing, user)
-    │   ├── repository/ # acesso a dados (postgres)
-    │   ├── service/    # regras de negócio
-    │   ├── handler/    # adaptadores HTTP
-    │   ├── scraper/    # implementações por fonte
-    │   ├── forex/      # cotação BRL/USD/JPY/EUR
-    │   ├── config/     # carregamento de env
-    │   └── middleware/
-    ├── pkg/            # utilidades reutilizáveis (decimal helpers, logger)
-    ├── migrations/     # SQL versionado (.up/.down)
-    ├── scripts/
-    └── tests/integration/
+├── backend/
+│   ├── go.mod
+│   ├── .env.example
+│   ├── cmd/
+│   │   ├── api/        # servidor HTTP (entrypoint principal)
+│   │   ├── scraper/    # workers de coleta por fonte
+│   │   └── migrate/    # CLI de migrations
+│   ├── internal/
+│   │   ├── domain/     # tipos puros (card, pricing, listing, user)
+│   │   ├── repository/ # acesso a dados (postgres)
+│   │   ├── service/    # regras de negócio
+│   │   ├── handler/    # adaptadores HTTP
+│   │   ├── scraper/    # implementações por fonte (ligapokemon, ebay, pokewallet)
+│   │   ├── forex/      # cotação BRL/USD/JPY/EUR
+│   │   ├── config/     # carregamento de env
+│   │   └── middleware/
+│   ├── pkg/            # utilidades reutilizáveis (decimal helpers, logger)
+│   ├── migrations/     # SQL versionado (.up/.down)
+│   ├── scripts/
+│   └── tests/integration/
+└── frontend/
+    ├── package.json
+    ├── next.config.ts
+    ├── tsconfig.json
+    ├── tailwind.config.ts
+    ├── app/
+    │   ├── layout.tsx
+    │   ├── page.tsx        # search form + results
+    │   └── globals.css
+    ├── components/
+    │   ├── SearchForm.tsx  # SetCombobox + number input
+    │   ├── SetCombobox.tsx # combobox filtrável de sets
+    │   ├── CardInfo.tsx
+    │   ├── PriceMatrix.tsx # tabela condição × fonte
+    │   ├── GradedSection.tsx
+    │   ├── SourceCard.tsx  # accordion por fonte
+    │   └── ConditionBadge.tsx
+    └── lib/
+        ├── types.ts        # tipos espelhando resposta do backend
+        ├── api.ts          # searchCard() → /api/v1/external-search
+        └── sets.ts         # useSets() — pokemontcg.io
 ```
 
 ## 4. Decisões de Arquitetura (ADR-style enxuto)
@@ -95,31 +116,32 @@ MercadoTCG/
 **Trade-off aceito:** Bootstrap precisa de matching manual ou semi-automático para popular as primeiras refs. Confidence < 100 sinaliza matches que precisam de revisão.
 
 ### ADR-011 — Estratégia por fonte: scraping vs API
-**Decisão:** **LigaPokemon** = scraping HTML via goquery (sem API pública). **TCGplayer** = endpoint não-documentado `mpapi.tcgplayer.com/v2/product/{id}/pricepoints` (sem credenciais). **eBay** = vendas recentes via Scrydex (`scrydex.com/pokemon/cards/x/{card-id}`), HTML com atributos `data-*` — sem credenciais, usa pokemontcg.io card ID como `ExternalID`. **Cardmarket** = scraping ao vivo via FlareSolverr (Chrome headless, contorna Cloudflare). ExternalID = `cardmarket.url` do pokemontcg.io. Quando ausente (sets novos), `resolveTarget` resolve a URL automaticamente com dois caminhos: (1) **SIR cards** (number > printedTotal): constrói o slug diretamente como `{CardName}-{SetCode}{Number}` sem prefixo V (ex: `Pikachu-ex-ASC276`) — uma única chamada ao FlareSolverr; (2) **cartas regulares** (number ≤ printedTotal): busca a página do set no Cardmarket e extrai o slug via `slugContainsNumber` (ex: `Pikachu-ex-V1-ASC057` para number=57 — número CM = número pokemontcg.io). Sem FlareSolverr, retorna 403 e handler injeta preços estimados via pokemontcg.io `trendPrice` + multiplicadores (ver ADR-014).
-**Razão:** Scrydex agrega vendas reais do eBay para cartas gradeadas em HTML server-rendered, sem autenticação. Cardmarket bloqueia scrapers com Cloudflare Managed Challenge — FlareSolverr usa Chrome não-detectado para resolver o desafio em ~13s. A API oficial do Cardmarket exigiria OAuth 1.0a. **Slug pattern descoberto empiricamente (2026-05-10):** o número no slug CM é o número oficial da carta (igual ao pokemontcg.io). Cartas com múltiplas versões recebem prefixo V-number (V1 = mais barata/comum); SIRs não recebem prefixo V porque o número já as identifica unicamente.
-**Trade-off aceito:** `mpapi` e Scrydex são endpoints não-documentados. eBay via Scrydex só tem dados de cartas **gradeadas** (PSA/BGS/CGC/ACE/TAG). Cardmarket seletores CSS confirmados contra HTML real: `div.article-row` → `a.article-condition span.badge` (texto NM/EX/GD/LP/PO) → `div.price-container span.color-primary` (preço EUR `1.234,56 €`). Resolução de cartas regulares requer 2 chamadas FlareSolverr (~26s); SIRs precisam só de 1 (~13s). Per-source timeout ≥ 90s quando FlareSolverr habilitado. O set listing do CM mostra apenas ~30 cards populares — cartas regulares com number ≤ 30 no set podem não aparecer (raro para sets com muitas cartas). 404 em URLs construídas é tratado como lista vazia (card ainda não indexado no CM).
+**Decisão:** **LigaPokemon** = scraping HTML via goquery (sem API pública). **TCGPlayer + Cardmarket** = API pokewallet.io (`internal/scraper/pokewallet/`) — uma chamada por carta retorna preços das duas plataformas (ver ADR-015). **eBay** = vendas recentes via Scrydex (`scrydex.com/pokemon/cards/x/{card-id}`), HTML com atributos `data-*` — sem credenciais, usa pokemontcg.io card ID como `ExternalID`. O scraper HTML do Cardmarket (`internal/scraper/cardmarket/`) ainda existe no código (com lógica de FlareSolverr e V-number retry) mas não é mais registrado no `cmd/api/main.go`; mantido por referência caso pokewallet.io fique indisponível.
+**Razão:** Scrydex agrega vendas reais do eBay para cartas gradeadas em HTML server-rendered, sem autenticação. O scraper Cardmarket via FlareSolverr produzia mapeamentos errados de cartas e requeria Chrome headless pesado (~13s por chamada); a pokewallet.io API é mais confiável e cobre ambas as fontes com uma única chamada HTTP.
+**Trade-off aceito:** eBay via Scrydex só tem dados de cartas **gradeadas** (PSA/BGS/CGC/ACE/TAG). pokewallet.io não filtra por idioma de card (inglês, português, espanhol etc.) — todos os idiomas disponíveis aparecem misturados. Free tier: 100 req/hora, 1.000/dia.
 
-### ADR-012 — Resolução de product ID do TCGPlayer via pokemontcg.io + Scrydex fallback
-**Decisão:** Para obter o product ID do TCGPlayer a partir de um card pokemontcg.io:
-1. **Estratégia primária**: `HEAD prices.pokemontcg.io/tcgplayer/{card-id}` → redirect 302 → `tcgplayer.pxf.io/scrydex?u=https://tcgplayer.com/product/{id}` → extrai ID do path.
-2. **Fallback**: `GET scrydex.com/pokemon/cards/{card-id}/purchase?variant=holofoil` → mesmo formato de redirect → extrai ID.
-O fallback cobre cards que o pokemontcg.io ainda não mapeou mas o Scrydex já tem (ex.: cards novos do set ASC).
-**Razão:** A estratégia primária cobre ~80% dos cards; o Scrydex (parceiro afiliado oficial do TCGPlayer) tem cobertura maior e usa o mesmo mecanismo de redirect afiliado.
-**Trade-off aceito:** Ambos os redirects são best-effort com timeout de 5s — se falharem, o product ID fica vazio e TCGPlayer retorna lista vazia para esse card.
+### ADR-012 — Resolução de product ID do TCGPlayer (SUPERSEDIDO pelo ADR-015)
+**Decisão (histórica):** Resolvia o product ID via redirect encadeado `prices.pokemontcg.io → tcgplayer.pxf.io → product/{id}`, com fallback via Scrydex. Ambas as estratégias eram best-effort com timeout de 5s.
+**Status:** Supersedida pelo ADR-015 (pokewallet.io). O scraper `internal/scraper/tcgplayer/` ainda existe mas não é registrado no main.go.
 
 ### ADR-013 — Preços TCGPlayer por condição via multiplicadores
-**Decisão:** O `marketPrice` da pricepoints API representa o preço de mercado NM. Derivamos LP/MP/HP/DMG aplicando multiplicadores padrão: NM=100%, LP=80%, MP=64%, HP=40%, DMG=24%.
-**Razão:** A API pública do TCGPlayer não tem endpoint de preços por condição sem credenciais. Os multiplicadores são os mesmos que o TCGPlayer usa internamente e que aparecem na interface do site.
-**Trade-off aceito:** São preços estimados, não preços de listagens reais por condição. Para uso no MVP de referência de preço isso é aceitável; se precisarmos de preços exatos por condição futuramente, precisaremos das credenciais da API oficial.
+**Decisão:** O preço base NM (da pokewallet.io `market_price` ou do scraper direto) gera LP/MP/HP/DMG aplicando multiplicadores padrão: NM=100%, LP=80%, MP=64%, HP=40%, DMG=24%.
+**Razão:** A API pública do TCGPlayer não tem endpoint de preços por condição sem credenciais. Os multiplicadores espelham os mesmos que o TCGPlayer usa internamente.
+**Trade-off aceito:** São preços estimados, não preços de listagens reais por condição. Aceitável para MVP de referência de preço.
 
-### ADR-014 — Cardmarket: scraping bloqueado, fallback via pokemontcg.io + multiplicadores
-**Decisão:** O scraper Cardmarket (`internal/scraper/cardmarket/`) tenta buscar ao vivo a página do produto (ExternalID = `cardmarket.url` do pokemontcg.io). Quando Cloudflare retorna 403 (caso padrão), retorna lista vazia sem erro. O handler detecta o resultado vazio e injeta preços por condição estimados usando `trendPrice` do pokemontcg.io como base NM, com multiplicadores do Cardmarket: NM=100%, EX→LP=70%, GD→MP=45%, LP→HP=25%, PO→DMG=10%.
-**Razão:** Cardmarket usa Cloudflare com desafio de browser que bloqueia clientes HTTP Go diretos. A API oficial requer OAuth 1.0a (gratuita mas com setup de credenciais e complexidade). Para MVP os multiplicadores dão referência EUR suficiente — quando pokemontcg.io adicionar dados do CM para um card (via `cardmarket.prices.trendPrice`), os preços aparecem automaticamente.
-**Trade-off aceito:** Para sets recentes (ex: ASC), pokemontcg.io pode não ter dados do Cardmarket ainda → fonte mostra 0 resultados até ser indexada. Os preços estimados por condição são derivados do `trendPrice` geral (≈NM), não de listings reais por condição.
+### ADR-014 — Cardmarket: multiplicadores por condição
+**Decisão:** Preços Cardmarket são derivados aplicando multiplicadores sobre o preço base `low` (menor preço por variante retornado pela pokewallet.io): NM=100%, LP=70%, MP=45%, HP=25%, DMG=10%.
+**Razão:** Cardmarket não expõe preços por condição diretamente via API. Os multiplicadores correspondem aos descontos praticados no mercado europeu.
+**Trade-off aceito:** São estimativas baseadas no menor preço disponível de cada variante (normal/holo/etc.), não preços reais de listings por condição.
+
+### ADR-015 — pokewallet.io como fonte primária para TCGPlayer + Cardmarket
+**Decisão:** O pacote `internal/scraper/pokewallet/` implementa `scraper.Source` duas vezes — `tcgSource` e `cmSource` — ambas retornadas por `New(apiKey, timeout)`. As duas wrappers compartilham um único `*Client` com HTTP client e `requestCache`, de forma que chamadas paralelas do fan-out no handler geram apenas uma requisição HTTP por carta. Busca via `GET /search?limit=20&q={name}+{number}`; seleção da carta certa via `pickBestMatch` com três passes de prioridade: (1) set code + number exatos, (2) set name contém + number (lida com prefixo de idioma "ME: Ascended Heroes"), (3) number only. TCGPlayer: usa o sub-tipo com maior `market_price`; Cardmarket: itera todas as variantes de preço e usa `low` como base NM. Cache de 60s por chave `SetCode/Number`.
+**Razão:** Substitui dois scrapers problemáticos (TCGPlayer via endpoint não-documentado, Cardmarket via FlareSolverr) por uma API oficial com cobertura confiável das duas fontes. Elimina o serviço FlareSolverr (container Chrome headless) do docker-compose.
+**Trade-off aceito:** Sem filtragem por idioma de card — pokewallet.io não expõe esse campo no endpoint de busca; todos os idiomas disponíveis aparecem como variantes. Free tier: 100 req/hora. Sem credencial (`POKEWALLET_API_KEY` vazia), as duas fontes retornam `ErrNotConfigured` graciosamente.
 
 ## 5. Status Atual
 
-**Fase:** 1 — Persistência.
+**Fase:** MVP de busca de preços concluído — frontend operacional.
 
 Concluído na sessão de bootstrap (2026-05-09):
 
@@ -188,6 +210,15 @@ Adicionado em 2026-05-10 (refinamento do external-search + eBay via Scrydex):
 - `internal/scraper/ebay/ebay.go` — **reescrito** usando Scrydex como fonte. Sem credenciais. Busca `scrydex.com/pokemon/cards/x/{card-id}` (slug ignorado, só o ID importa). Parseia vendas recentes do eBay via regex sobre atributos `data-company`, `data-grade`, `data-price`, `data-currency`, `data-sold-at`. Agrupa por company+grade e devolve o menor preço por grupo. Ordena por company (PSA→BGS→CGC→ACE→TAG) e grade decrescente. `Kind = KindSale` (vendas reais, não listagens).
 - `internal/domain/pricing/pricing.go` — adicionada função `ConditionFromTCG(s string) Condition` para normalizar strings de condição.
 
+Adicionado em 2026-05-10 (pokewallet.io + frontend Next.js):
+
+- `internal/scraper/pokewallet/pokewallet.go` — substitui scrapers TCGPlayer e Cardmarket. `New(apiKey, timeout)` devolve dois `scraper.Source` (`tcgSource` + `cmSource`) que compartilham um único HTTP client e `requestCache` (deduplicação de chamadas paralelas, TTL 60s). Busca por `{name} {number}` em `GET /search?limit=20`. `pickBestMatch`: 3 passes — set code + number exato > set name contém + number > number only. TCGPlayer: maior `market_price` → 5 condições via multiplicadores (NM/LP/MP/HP/DMG 100%/80%/64%/40%/24%). Cardmarket: itera todas as variantes, usa `low` como NM, 5 condições via multiplicadores (NM/LP/MP/HP/DMG 100%/70%/45%/25%/10%). Sem credencial → `ErrNotConfigured`.
+- `backend/internal/scraper/cardmarket/cardmarket.go` — adicionado retry V1–V10: quando nenhum artigo é encontrado na URL principal, testa `{slug}-V1-{SETCODE}{num}`, `V2...`, até V10. Helper `injectVersion` insere o sufixo `-V{n}` antes do código de set no slug. Scraper mantido no código mas não registrado no main.go (pokewallet.io é o primário).
+- `cmd/api/main.go` — removidos imports `tcgplayer`, `cardmarket`, `pricing`; adicionado `pokewallet`. Scrapers: `ligapokemon`, `pwTCG`, `pwCM`, `ebay`. FlareSolverr removido.
+- `docker-compose.yml` — serviço `flaresolverr` removido; `POKEWALLET_API_KEY` e `POKEMON_TCG_API_KEY` adicionados ao serviço `api`. Dependência `flaresolverr: service_started` removida.
+- `internal/config/config.go` — campo `PokeWalletAPIKey string` adicionado; lê `POKEWALLET_API_KEY`.
+- **Frontend** (`frontend/`) — Next.js 16, App Router, Tailwind CSS 4. Componentes: `SetCombobox` (combobox filtrável carregando sets da pokemontcg.io), `SearchForm`, `CardInfo`, `PriceMatrix` (tabela condição × fonte), `GradedSection` (vendas eBay gradeadas), `SourceCard` (accordion por fonte), `ConditionBadge`. `lib/api.ts` → `searchCard(number, set)` para `GET /api/v1/external-search`. `lib/sets.ts` → `useSets()` com cache em memória (uma fetch por sessão). `.env.local` → `NEXT_PUBLIC_API_URL=http://localhost:8080`.
+
 Adicionado em 2026-05-09 (fase 4, lookup multi-fonte multi-condição):
 
 - `card.CardWithSet` — view de leitura juntando carta + set, usada em endpoints de busca.
@@ -221,11 +252,11 @@ Ordem atualizada em 2026-05-10.
    - `POST /stock-items/{id}/sale` (registrar venda)
    - `GET  /stores/{id}/stock` (lista paginada, opcional `?with_signal=true`)
    - `GET  /variants/{id}/signal` (PriceSignal das 3 fontes)
-5. **Job de agregação diária** — `cmd/aggregate` (ou cron-job em `cmd/scraper`) chama `PriceDailyRepo.RebuildDay(today)` e `RebuildDay(today-1)`. Sem isso, `pricesignal` fica desatualizado.
-6. **Testes integrados** — `tests/integration` com `testcontainers-go` para os repos críticos (`StockRepo` com transações, `PriceDailyRepo.RebuildDay`, `forex.Service` com fake Provider).
-7. **Frontend Next.js** — App Router. MVP focado em "minha loja": listagem do estoque com sinal de preço por fonte e ação de registrar compra/venda.
-8. **Auth + tabela `users`** — destrava FK em `listings.seller_id` e em `stores.owner_id`. Decidir: Supabase Auth ou tabela própria.
-9. **Marketplace público** — handlers e UI para comprar listings de outras lojas. Aqui entra a integração de pagamentos (seção 9).
+3. **Frontend — evolução**: adicionar listagem de estoque da loja ao frontend, integrar `/api/v1/cards/lookup` para histórico de preços, adicionar gráfico de série temporal (price_daily).
+4. **Job de agregação diária** — `cmd/aggregate` (ou cron-job em `cmd/scraper`) chama `PriceDailyRepo.RebuildDay(today)` e `RebuildDay(today-1)`. Sem isso, `pricesignal` fica desatualizado.
+5. **Testes integrados** — `tests/integration` com `testcontainers-go` para os repos críticos (`StockRepo` com transações, `PriceDailyRepo.RebuildDay`, `forex.Service` com fake Provider).
+6. **Auth + tabela `users`** — destrava FK em `listings.seller_id` e em `stores.owner_id`. Decidir: Supabase Auth ou tabela própria.
+7. **Marketplace público** — handlers e UI para comprar listings de outras lojas. Aqui entra a integração de pagamentos (seção 9).
 
 ## 7. Convenções
 
@@ -233,13 +264,12 @@ Ordem atualizada em 2026-05-10.
 - **Erros**: sempre embrulhados com `fmt.Errorf("...: %w", err)`. Sentinelas exportados (`ErrNotFound`) por pacote de domínio quando relevante.
 - **SQL**: snake_case sempre, ENUMs no plural natural do conceito (`card_condition`, `price_source`).
 - **Migrations**: pares `.up.sql` / `.down.sql` numerados em sequência. Toda alteração de ENUM exige migration nova — nunca editar uma já aplicada.
-- **Front (futuro)**: App Router; server components por padrão, client component só quando há interatividade.
+- **Frontend**: App Router; server components por padrão, client component (`"use client"`) só quando há interatividade (estado, eventos, hooks). `NEXT_PUBLIC_API_URL` via `.env.local` aponta para o backend Go.
 
 ## 8. O que NÃO está pronto (lembretes para sessões futuras)
 
 - Tabela `users` ainda não existe — `listings.seller_id` e `stores.owner_id` estão sem FK proposital até decidirmos se Auth fica no Supabase Auth ou em tabela própria.
 - Não há job criando partições futuras de `price_history`. Hardcoded até 2026-Q4.
-- Frontend ainda não foi inicializado.
 - Sem testes ainda. Repositórios das fases 1–3 + serviços da fase 2 precisam nascer com `testcontainers-go` antes do primeiro deploy. Crítico: `StockRepo` (transações, custo médio ponderado).
 - `PriceHistoryRepo.InsertBatch` (CopyFrom) **não respeita ON CONFLICT** — a estratégia atual para deduplicação é o pipeline a montante; se acoplarmos COPY a um stage table + `INSERT ... ON CONFLICT DO NOTHING`, é uma migration nova.
 - `ListingRepo` ainda não existe — virá junto com a história de marketplace.
