@@ -1,0 +1,23 @@
+# Mantém o build context pequeno — afeta velocidade do `docker compose build`.
+.git
+.gitignore
+.env
+*.log
+*.test
+*.out
+coverage.html
+SETUP.md
+README.md
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Diretórios de IDE e SO
+.idea/
+.vscode/
+.DS_Store
+
+# Saída de builds locais
+/bin/
+/dist/
+/tmp/

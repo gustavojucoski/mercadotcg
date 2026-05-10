@@ -1,0 +1,10 @@
+.env
+*.log
+/bin/
+/dist/
+/tmp/
+.idea/
+.vscode/
+*.test
+*.out
+coverage.html

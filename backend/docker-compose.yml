@@ -1,0 +1,121 @@
+# docker-compose para desenvolvimento local — fluxo 100% containerizado.
+#
+# Você não precisa de Go instalado: o Dockerfile compila os 3 binários
+# (api, migrate, seed) dentro de um container golang.
+#
+# Uso típico:
+#   docker compose up --build         # primeira vez (build + tudo)
+#   docker compose up                 # próximas vezes (sem rebuild)
+#   docker compose logs -f api        # acompanha a API
+#   docker compose down               # derruba (mantém banco)
+#   docker compose down -v            # derruba e APAGA dados do banco
+
+services:
+  # -----------------------------------------------------------------------
+  # Postgres 16 — fonte de verdade.
+  # -----------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: mercadotcg-db
+    environment:
+      POSTGRES_USER: mercadotcg
+      POSTGRES_PASSWORD: mercadotcg
+      POSTGRES_DB: mercadotcg
+    ports:
+      - "5432:5432"
+    volumes:
+      - mercadotcg-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mercadotcg -d mercadotcg"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # -----------------------------------------------------------------------
+  # Adminer — UI web pra navegar nas tabelas (http://localhost:8081).
+  # -----------------------------------------------------------------------
+  adminer:
+    image: adminer:4
+    container_name: mercadotcg-adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+
+  # -----------------------------------------------------------------------
+  # migrate — one-shot. Aplica todas as migrations e sai.
+  # -----------------------------------------------------------------------
+  migrate:
+    build: .
+    container_name: mercadotcg-migrate
+    command: ["/app/migrate", "up"]
+    environment:
+      DATABASE_URL: "postgres://mercadotcg:mercadotcg@db:5432/mercadotcg?sslmode=disable"
+      MIGRATIONS_PATH: "/app/migrations"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # -----------------------------------------------------------------------
+  # seed — one-shot. Roda só depois das migrations terminarem.
+  # Idempotente: detecta se a loja demo já existe e pula a parte de estoque.
+  # -----------------------------------------------------------------------
+  seed:
+    build: .
+    container_name: mercadotcg-seed
+    command: ["/app/seed"]
+    environment:
+      DATABASE_URL: "postgres://mercadotcg:mercadotcg@db:5432/mercadotcg?sslmode=disable"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # -----------------------------------------------------------------------
+  # api — sobe depois do seed terminar.
+  # -----------------------------------------------------------------------
+  api:
+    build: .
+    container_name: mercadotcg-api
+    command: ["/app/api"]
+    environment:
+      DATABASE_URL: "postgres://mercadotcg:mercadotcg@db:5432/mercadotcg?sslmode=disable"
+      HTTP_PORT: "8080"
+      APP_ENV: "development"
+      LOG_LEVEL: "info"
+      TCGPLAYER_PUBLIC_KEY:  "${TCGPLAYER_PUBLIC_KEY:-}"
+      TCGPLAYER_PRIVATE_KEY: "${TCGPLAYER_PRIVATE_KEY:-}"
+      EBAY_CLIENT_ID:        "${EBAY_CLIENT_ID:-}"
+      EBAY_CLIENT_SECRET:    "${EBAY_CLIENT_SECRET:-}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # import-catalog — service opcional sob profile "catalog".
+  #
+  # NÃO sobe em `docker compose up` normal. Você dispara assim:
+  #
+  #   docker compose --profile catalog run --rm import-catalog                    # tudo
+  #   docker compose --profile catalog run --rm import-catalog --recent 5         # 5 sets recentes
+  #   docker compose --profile catalog run --rm import-catalog --set sv8          # só sv8
+  # -----------------------------------------------------------------------
+  import-catalog:
+    build: .
+    profiles: ["catalog"]
+    container_name: mercadotcg-import-catalog
+    entrypoint: ["/app/import-catalog"]
+    environment:
+      DATABASE_URL: "postgres://mercadotcg:mercadotcg@db:5432/mercadotcg?sslmode=disable"
+      POKEMON_TCG_API_KEY: "${POKEMON_TCG_API_KEY:-}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  mercadotcg-pgdata:
