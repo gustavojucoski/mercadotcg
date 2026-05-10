@@ -95,9 +95,9 @@ MercadoTCG/
 **Trade-off aceito:** Bootstrap precisa de matching manual ou semi-automático para popular as primeiras refs. Confidence < 100 sinaliza matches que precisam de revisão.
 
 ### ADR-011 — Estratégia por fonte: scraping vs API
-**Decisão:** **LigaPokemon** = scraping HTML via goquery (sem API pública). **TCGplayer** = endpoint não-documentado `mpapi.tcgplayer.com/v2/product/{id}/pricepoints` (sem credenciais). **eBay** = vendas recentes via Scrydex (`scrydex.com/pokemon/cards/x/{card-id}`), HTML com atributos `data-*` — sem credenciais, usa pokemontcg.io card ID como `ExternalID`. **Cardmarket** = preços via pokemontcg.io (campo `cardmarket.prices` em EUR).
-**Razão:** Scrydex agrega vendas reais do eBay para cartas gradeadas (PSA/BGS/CGC/ACE/TAG) em HTML server-rendered, sem autenticação. O card ID do pokemontcg.io basta — o slug da URL é ignorado pelo Scrydex. A Browse API oficial do eBay exigiria credenciais e teria custo de manutenção OAuth maior sem ganho proporcional no MVP.
-**Trade-off aceito:** `mpapi` e Scrydex são endpoints não-documentados — podem mudar sem aviso. eBay via Scrydex só tem dados de cartas **gradeadas** (PSA/BGS/CGC/ACE/TAG), não de cartas não-gradeadas. Preços de condição (LP/MP/HP/DMG) no TCGPlayer são derivados do NM com multiplicadores padrão (ver ADR-013), não coletados individualmente.
+**Decisão:** **LigaPokemon** = scraping HTML via goquery (sem API pública). **TCGplayer** = endpoint não-documentado `mpapi.tcgplayer.com/v2/product/{id}/pricepoints` (sem credenciais). **eBay** = vendas recentes via Scrydex (`scrydex.com/pokemon/cards/x/{card-id}`), HTML com atributos `data-*` — sem credenciais, usa pokemontcg.io card ID como `ExternalID`. **Cardmarket** = tenta scraping ao vivo da página do produto (ExternalID = URL do cardmarket.url do pokemontcg.io); retorna lista vazia em 403 por Cloudflare e o handler injeta preços por condição estimados via pokemontcg.io `trendPrice` + multiplicadores (ver ADR-014).
+**Razão:** Scrydex agrega vendas reais do eBay para cartas gradeadas (PSA/BGS/CGC/ACE/TAG) em HTML server-rendered, sem autenticação. O card ID do pokemontcg.io basta — o slug da URL é ignorado pelo Scrydex. A Browse API oficial do eBay exigiria credenciais e teria custo de manutenção OAuth maior sem ganho proporcional no MVP. Cardmarket usa Cloudflare e bloqueia scrapers; a API oficial exigiria OAuth 1.0a.
+**Trade-off aceito:** `mpapi` e Scrydex são endpoints não-documentados — podem mudar sem aviso. eBay via Scrydex só tem dados de cartas **gradeadas** (PSA/BGS/CGC/ACE/TAG), não de cartas não-gradeadas. Preços de condição (LP/MP/HP/DMG) no TCGPlayer e Cardmarket são derivados do NM com multiplicadores padrão (ver ADR-013/ADR-014), não coletados individualmente.
 
 ### ADR-012 — Resolução de product ID do TCGPlayer via pokemontcg.io + Scrydex fallback
 **Decisão:** Para obter o product ID do TCGPlayer a partir de um card pokemontcg.io:
@@ -111,6 +111,11 @@ O fallback cobre cards que o pokemontcg.io ainda não mapeou mas o Scrydex já t
 **Decisão:** O `marketPrice` da pricepoints API representa o preço de mercado NM. Derivamos LP/MP/HP/DMG aplicando multiplicadores padrão: NM=100%, LP=80%, MP=64%, HP=40%, DMG=24%.
 **Razão:** A API pública do TCGPlayer não tem endpoint de preços por condição sem credenciais. Os multiplicadores são os mesmos que o TCGPlayer usa internamente e que aparecem na interface do site.
 **Trade-off aceito:** São preços estimados, não preços de listagens reais por condição. Para uso no MVP de referência de preço isso é aceitável; se precisarmos de preços exatos por condição futuramente, precisaremos das credenciais da API oficial.
+
+### ADR-014 — Cardmarket: scraping bloqueado, fallback via pokemontcg.io + multiplicadores
+**Decisão:** O scraper Cardmarket (`internal/scraper/cardmarket/`) tenta buscar ao vivo a página do produto (ExternalID = `cardmarket.url` do pokemontcg.io). Quando Cloudflare retorna 403 (caso padrão), retorna lista vazia sem erro. O handler detecta o resultado vazio e injeta preços por condição estimados usando `trendPrice` do pokemontcg.io como base NM, com multiplicadores do Cardmarket: NM=100%, EX→LP=70%, GD→MP=45%, LP→HP=25%, PO→DMG=10%.
+**Razão:** Cardmarket usa Cloudflare com desafio de browser que bloqueia clientes HTTP Go diretos. A API oficial requer OAuth 1.0a (gratuita mas com setup de credenciais e complexidade). Para MVP os multiplicadores dão referência EUR suficiente — quando pokemontcg.io adicionar dados do CM para um card (via `cardmarket.prices.trendPrice`), os preços aparecem automaticamente.
+**Trade-off aceito:** Para sets recentes (ex: ASC), pokemontcg.io pode não ter dados do Cardmarket ainda → fonte mostra 0 resultados até ser indexada. Os preços estimados por condição são derivados do `trendPrice` geral (≈NM), não de listings reais por condição.
 
 ## 5. Status Atual
 
@@ -155,6 +160,12 @@ Adicionado em 2026-05-09 (fase 5, busca AO VIVO + catálogo):
 - `cmd/import-catalog` — importador da Pokemon TCG API (https://pokemontcg.io). Paginação automática, idempotente. Heurística de variantes: cria `normal` sempre; adiciona `holo` ou `reverse_holo` se a raridade indicar. Suporta `--set <code>` e `--recent <N>` para imports parciais.
 - Config ganhou `TCGPlayerPublicKey/PrivateKey`, `EbayClientID/ClientSecret`, `PokemonTCGAPIKey` (todas opcionais). `.env.example` documenta como obter.
 - docker-compose: serviço `import-catalog` sob profile `catalog` — não sobe em `up` normal, dispara via `docker compose --profile catalog run --rm import-catalog`.
+
+Adicionado em 2026-05-10 (Cardmarket ao vivo + per-condition fallback):
+
+- `internal/scraper/cardmarket/cardmarket.go` — scraper Cardmarket. Tenta buscar página ao vivo (ExternalID = URL do pokemontcg.io). Retorna lista vazia sem erro quando Cloudflare bloqueia (403/503). goquery com múltiplas estratégias de seletores CSS para quando o site estiver acessível.
+- `internal/handler/external.go` — passa `info.CardmarketURL` como ExternalID para o scraper Cardmarket. Fallback atualizado: quando scraper retorna vazio + pokemontcg.io tem `trendPrice`, injeta 5 resultados por condição (NM/EX/GD/LP/PO) usando multiplicadores do Cardmarket sobre o trendPrice. Substituiu a abordagem anterior (Trend/Average/Low/30-day) por preços por condição consistentes com o TCGPlayer.
+- `cmd/api/main.go` — adicionado `cardmarket.New(12*time.Second)` ao slice de scrapers.
 
 Adicionado em 2026-05-10 (refinamento do external-search + eBay via Scrydex):
 

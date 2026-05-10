@@ -23,6 +23,7 @@ import (
 	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/repository/postgres"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/cardmarket"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ebay"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ligapokemon"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/tcgplayer"
@@ -88,13 +89,15 @@ func main() {
 	})
 
 	// ---- Scrapers ------------------------------------------------------------
-	// LigaPokemon: HTML scraping sem credenciais.
-	// TCGplayer: pricepoints API pública (requer ExternalID no query).
-	// eBay: vendas via Scrydex — sem credenciais, usa ExternalID como pokemontcg.io card ID.
+	// LigaPokemon: HTML scraping sem credenciais (BRL).
+	// TCGplayer: pricepoints API pública; ExternalID = product ID (USD).
+	// eBay: vendas via Scrydex; ExternalID = pokemontcg.io card ID (USD).
+	// Cardmarket: tenta scraping ao vivo; fallback via pokemontcg.io (EUR).
 	scrapers := []scraper.Source{
 		ligapokemon.New(12 * time.Second),
 		tcgplayer.New(12 * time.Second),
 		ebay.New(12 * time.Second),
+		cardmarket.New(12 * time.Second),
 	}
 
 	// API v1

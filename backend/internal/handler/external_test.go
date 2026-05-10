@@ -12,6 +12,7 @@ import (
 
 	"github.com/gustavojucoski/mercadotcg/backend/internal/handler"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/cardmarket"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ebay"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ligapokemon"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/tcgplayer"
@@ -54,6 +55,7 @@ func newRouter(t *testing.T) *chi.Mux {
 		ligapokemon.New(20*time.Second),
 		tcgplayer.New(20*time.Second),
 		ebay.New(20*time.Second),
+		cardmarket.New(20*time.Second),
 	).WithCatalog(catalog)
 
 	r := chi.NewRouter()

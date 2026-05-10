@@ -40,37 +40,45 @@ func tcgPricesFromCatalog(prices map[string]pokemontcgio.TCGPriceRange, cardURL 
 	return results
 }
 
-// cardmarketResultsFromCatalog converte os preços do Cardmarket (pokemontcg.io) em resultados.
+// cmConditionMultipliers mapeia condições do Cardmarket sobre o trendPrice (NM base).
+// NM→NM, EX→LP, GD→MP, LP→HP, PO→DMG — nomenclatura CM europeia.
+var cmConditionMultipliers = []struct {
+	condition string  // nossa constante Condition
+	rawCM     string  // label original do Cardmarket
+	factor    float64 // multiplicador sobre o trendPrice (NM = 100%)
+}{
+	{string(pricing.ConditionNearMint), "NM", 1.00},
+	{string(pricing.ConditionLightlyPlayed), "EX", 0.70},
+	{string(pricing.ConditionModeratelyPlayed), "GD", 0.45},
+	{string(pricing.ConditionHeavilyPlayed), "LP", 0.25},
+	{string(pricing.ConditionDamaged), "PO", 0.10},
+}
+
+// cardmarketResultsFromCatalog deriva preços por condição a partir do trendPrice do
+// pokemontcg.io, aplicando os multiplicadores padrão do Cardmarket.
+// Usado como fallback quando o scraper ao vivo não retorna resultados.
 func cardmarketResultsFromCatalog(p *pokemontcgio.CardmarketPriceRange, name, cardURL string) []scraper.Result {
 	if p == nil {
 		return nil
 	}
-	// Prefere trendPrice → averageSellPrice como referência principal.
-	pick := func(v *float64) (decimal.Decimal, bool) {
-		if v == nil || *v == 0 {
-			return decimal.Zero, false
+	// Usa trendPrice como base NM; cai em averageSellPrice ou lowPrice se ausente.
+	var nmPrice decimal.Decimal
+	for _, v := range []*float64{p.TrendPrice, p.AverageSellPrice, p.LowPrice} {
+		if v != nil && *v > 0 {
+			nmPrice = decimal.NewFromFloat(*v)
+			break
 		}
-		return decimal.NewFromFloat(*v), true
 	}
-	type entry struct {
-		label string
-		val   *float64
+	if nmPrice.IsZero() {
+		return nil
 	}
-	candidates := []entry{
-		{"Trend", p.TrendPrice},
-		{"Average Sell", p.AverageSellPrice},
-		{"Low", p.LowPrice},
-		{"30-day Avg", p.Avg30},
-	}
-	var results []scraper.Result
-	for _, e := range candidates {
-		price, ok := pick(e.val)
-		if !ok {
-			continue
-		}
+
+	results := make([]scraper.Result, 0, len(cmConditionMultipliers))
+	for _, cond := range cmConditionMultipliers {
+		price := nmPrice.Mul(decimal.NewFromFloat(cond.factor)).Round(2)
 		title := "Cardmarket"
 		if name != "" {
-			title = name + " — " + e.label
+			title = name + " · " + cond.rawCM
 		}
 		results = append(results, scraper.Result{
 			Title:        title,
@@ -78,7 +86,8 @@ func cardmarketResultsFromCatalog(p *pokemontcgio.CardmarketPriceRange, name, ca
 			Price:        price,
 			Currency:     pricing.CurrencyEUR,
 			Kind:         pricing.KindListing,
-			RawCondition: e.label,
+			Condition:    cond.condition,
+			RawCondition: cond.rawCM,
 		})
 	}
 	return results
@@ -183,6 +192,9 @@ func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 			if info.ID != "" {
 				sourceExternalIDs[pricing.SourceEbay] = info.ID
 			}
+			if info.CardmarketURL != "" {
+				sourceExternalIDs[pricing.SourceCardmarket] = info.CardmarketURL
+			}
 			catalogInfo = &info
 		}
 	}
@@ -224,18 +236,24 @@ func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Cardmarket: se pokemontcg.io trouxe preços EUR, injeta como fonte sintética.
+	// Cardmarket: se o scraper retornou vazio mas temos preços do catálogo,
+	// injeta preços por condição estimados via multiplicadores sobre o trendPrice.
 	if catalogInfo != nil && catalogInfo.CardmarketPrices != nil {
-		synthetic := cardmarketResultsFromCatalog(
-			catalogInfo.CardmarketPrices,
-			catalogInfo.Name,
-			catalogInfo.CardmarketURL,
-		)
-		if len(synthetic) > 0 {
-			results = append(results, scraper.SourceResult{
-				Source:  pricing.SourceCardmarket,
-				Results: synthetic,
-			})
+		for i, r := range results {
+			if r.Source == pricing.SourceCardmarket && len(r.Results) == 0 {
+				synthetic := cardmarketResultsFromCatalog(
+					catalogInfo.CardmarketPrices,
+					catalogInfo.Name,
+					catalogInfo.CardmarketURL,
+				)
+				if len(synthetic) > 0 {
+					results[i] = scraper.SourceResult{
+						Source:     pricing.SourceCardmarket,
+						DurationMS: r.DurationMS,
+						Results:    synthetic,
+					}
+				}
+			}
 		}
 	}
 
