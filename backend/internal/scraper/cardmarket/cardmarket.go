@@ -1,19 +1,25 @@
 // Package cardmarket implements scraper.Source for Cardmarket
-// (https://www.cardmarket.com) via direct HTML scraping.
+// (https://www.cardmarket.com) via HTML scraping.
 //
 // Strategy:
 //  1. Requires ExternalID — the full Cardmarket card URL from pokemontcg.io
 //     (e.g. "https://www.cardmarket.com/en/Pokemon/Products/Singles/...").
 //  2. Fetches the card product page.
+//     - When FlareSolverr is configured: routes through FlareSolverr to bypass
+//       Cloudflare's Managed Challenge (JS-based bot detection).
+//     - Without FlareSolverr: direct HTTP, returns empty on 403.
 //  3. Parses the article listing table for per-condition prices.
 //     Cardmarket conditions: NM, EX, GD, LP, PO → mapped to NM/LP/MP/HP/DMG.
 //  4. Returns cheapest listing per condition, ordered NM→LP→MP→HP→DMG.
 //
-// No credentials required. Returns empty list on bot-detection (graceful failure).
+// The handler falls back to pokemontcg.io trendPrice + condition multipliers
+// when this scraper returns empty (see handler/external.go ADR-014).
 package cardmarket
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,12 +37,24 @@ const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 
 // Client is the Cardmarket scraper.
 type Client struct {
-	http *http.Client
+	http            *http.Client
+	flareSolverrURL string // e.g. "http://localhost:8191" — empty = direct HTTP
 }
 
-// New creates a new Client.
+// New creates a client that fetches Cardmarket directly (will 403 on Cloudflare).
 func New(timeout time.Duration) *Client {
 	return &Client{http: &http.Client{Timeout: timeout}}
+}
+
+// NewWithFlareSolverr creates a client that routes requests through FlareSolverr
+// to bypass Cloudflare. flareSolverrURL is e.g. "http://localhost:8191".
+// The timeout applies to the FlareSolverr HTTP call (should be ≥ 65s to match
+// FlareSolverr's 60s maxTimeout).
+func NewWithFlareSolverr(timeout time.Duration, flareSolverrURL string) *Client {
+	return &Client{
+		http:            &http.Client{Timeout: timeout},
+		flareSolverrURL: strings.TrimRight(flareSolverrURL, "/"),
+	}
 }
 
 // Name implements scraper.Source.
@@ -62,7 +80,16 @@ func (c *Client) Search(ctx context.Context, q scraper.Query) ([]scraper.Result,
 
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 
+// fetchBody fetches the target page via FlareSolverr (when configured) or
+// direct HTTP. Returns ("", nil) on 403/503 so callers treat it as empty.
 func (c *Client) fetchBody(ctx context.Context, target string) (string, error) {
+	if c.flareSolverrURL != "" {
+		return c.fetchViaFlareSolverr(ctx, target)
+	}
+	return c.fetchDirect(ctx, target)
+}
+
+func (c *Client) fetchDirect(ctx context.Context, target string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
@@ -78,21 +105,88 @@ func (c *Client) fetchBody(ctx context.Context, target string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	// 403/503 from Cloudflare → treat as empty (graceful failure)
 	if resp.StatusCode == 403 || resp.StatusCode == 503 {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return "", nil
+		return "", nil // Cloudflare block → empty, no error
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return "", fmt.Errorf("status %d em %s", resp.StatusCode, target)
 	}
-
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("ler body: %w", err)
 	}
 	return string(b), nil
+}
+
+// flareSolverrRequest é o corpo do POST para o endpoint /v1 do FlareSolverr.
+type flareSolverrRequest struct {
+	Cmd        string `json:"cmd"`
+	URL        string `json:"url"`
+	MaxTimeout int    `json:"maxTimeout"` // ms
+}
+
+// flareSolverrResponse é a resposta do FlareSolverr.
+type flareSolverrResponse struct {
+	Status   string `json:"status"`
+	Solution struct {
+		Status   int    `json:"status"`
+		Response string `json:"response"`
+	} `json:"solution"`
+}
+
+// fetchViaFlareSolverr fetches the target page through FlareSolverr, which
+// runs an undetected browser to solve Cloudflare challenges.
+func (c *Client) fetchViaFlareSolverr(ctx context.Context, target string) (string, error) {
+	// Derive maxTimeout from context deadline so FlareSolverr doesn't overshoot.
+	maxTimeout := 60_000 // 60s default
+	if dl, ok := ctx.Deadline(); ok {
+		remaining := int(time.Until(dl).Milliseconds()) - 2_000
+		if remaining > 0 && remaining < maxTimeout {
+			maxTimeout = remaining
+		}
+	}
+
+	body, err := json.Marshal(flareSolverrRequest{
+		Cmd:        "request.get",
+		URL:        target,
+		MaxTimeout: maxTimeout,
+	})
+	if err != nil {
+		return "", fmt.Errorf("flaresolverr: marshal: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.flareSolverrURL+"/v1", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("flaresolverr: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("flaresolverr: http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", fmt.Errorf("flaresolverr: status %d", resp.StatusCode)
+	}
+
+	var fsResp flareSolverrResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fsResp); err != nil {
+		return "", fmt.Errorf("flaresolverr: decode: %w", err)
+	}
+	if fsResp.Status != "ok" {
+		return "", fmt.Errorf("flaresolverr: status=%q", fsResp.Status)
+	}
+	if fsResp.Solution.Status < 200 || fsResp.Solution.Status >= 300 {
+		return "", fmt.Errorf("flaresolverr: target status %d", fsResp.Solution.Status)
+	}
+
+	return fsResp.Solution.Response, nil
 }
 
 // ─── Parse ────────────────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/gustavojucoski/mercadotcg/backend/internal/config"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/pricing"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/forex"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/handler"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
@@ -92,12 +93,22 @@ func main() {
 	// LigaPokemon: HTML scraping sem credenciais (BRL).
 	// TCGplayer: pricepoints API pública; ExternalID = product ID (USD).
 	// eBay: vendas via Scrydex; ExternalID = pokemontcg.io card ID (USD).
-	// Cardmarket: tenta scraping ao vivo; fallback via pokemontcg.io (EUR).
+	// Cardmarket: via FlareSolverr se FLARESOLVERR_URL configurado; caso contrário
+	//   tentativa direta (provavelmente 403) e fallback via pokemontcg.io (EUR).
+	const cmTimeout = 70 * time.Second // FlareSolverr pode levar até 60s
+	var cmScraper scraper.Source
+	if cfg.FlareSolverrURL != "" {
+		cmScraper = cardmarket.NewWithFlareSolverr(cmTimeout, cfg.FlareSolverrURL)
+		log.Info().Str("flaresolverr", cfg.FlareSolverrURL).Msg("Cardmarket usando FlareSolverr")
+	} else {
+		cmScraper = cardmarket.New(12 * time.Second)
+	}
+
 	scrapers := []scraper.Source{
 		ligapokemon.New(12 * time.Second),
 		tcgplayer.New(12 * time.Second),
 		ebay.New(12 * time.Second),
-		cardmarket.New(12 * time.Second),
+		cmScraper,
 	}
 
 	// API v1
@@ -105,7 +116,13 @@ func main() {
 		handler.NewCardHandler(cardRepo, signalSvc).Routes(r)
 		handler.NewStoreHandler(storeRepo, stockRepo, signalSvc).Routes(r)
 		handler.NewVariantHandler(signalSvc).Routes(r)
-		handler.NewExternalHandler(scrapers...).WithCatalog(ptcgClient).Routes(r)
+
+		extHandler := handler.NewExternalHandler(scrapers...).WithCatalog(ptcgClient)
+		if cfg.FlareSolverrURL != "" {
+			// FlareSolverr precisa de timeout maior — outras fontes têm 12s.
+			extHandler = extHandler.WithSourceTimeout(pricing.SourceCardmarket, cmTimeout)
+		}
+		extHandler.Routes(r)
 	})
 
 	// Imprime as rotas no boot — útil pra você descobrir o que tem.

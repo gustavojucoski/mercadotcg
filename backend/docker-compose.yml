@@ -88,11 +88,30 @@ services:
       TCGPLAYER_PRIVATE_KEY: "${TCGPLAYER_PRIVATE_KEY:-}"
       EBAY_CLIENT_ID:        "${EBAY_CLIENT_ID:-}"
       EBAY_CLIENT_SECRET:    "${EBAY_CLIENT_SECRET:-}"
+      FLARESOLVERR_URL:      "http://flaresolverr:8191"
     ports:
       - "8080:8080"
     depends_on:
       seed:
         condition: service_completed_successfully
+      flaresolverr:
+        condition: service_started
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # FlareSolverr — proxy que resolve Cloudflare challenges com Chrome headless.
+  # Usado pelo scraper do Cardmarket. Sobe junto com o stack normal.
+  # Interface: POST http://flaresolverr:8191/v1
+  # -----------------------------------------------------------------------
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: mercadotcg-flaresolverr
+    environment:
+      LOG_LEVEL: "info"
+      LOG_HTML: "false"
+      CAPTCHA_SOLVER: "none"
+    ports:
+      - "8191:8191"
     restart: unless-stopped
 
   # -----------------------------------------------------------------------

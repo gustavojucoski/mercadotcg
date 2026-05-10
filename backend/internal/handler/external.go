@@ -102,6 +102,7 @@ type cardResolver interface {
 type ExternalHandler struct {
 	sources          []scraper.Source
 	perSourceTimeout time.Duration
+	sourceTimeouts   map[pricing.Source]time.Duration // override por fonte
 	catalog          cardResolver // opcional — quando presente, resolve name e TCGPlayer ID
 }
 
@@ -117,6 +118,16 @@ func NewExternalHandler(sources ...scraper.Source) *ExternalHandler {
 // nome da carta e product IDs por fonte, a partir de number+set apenas.
 func (h *ExternalHandler) WithCatalog(c cardResolver) *ExternalHandler {
 	h.catalog = c
+	return h
+}
+
+// WithSourceTimeout define timeout específico para uma fonte.
+// Útil quando uma fonte (ex: Cardmarket via FlareSolverr) precisa de mais tempo.
+func (h *ExternalHandler) WithSourceTimeout(src pricing.Source, d time.Duration) *ExternalHandler {
+	if h.sourceTimeouts == nil {
+		h.sourceTimeouts = make(map[pricing.Source]time.Duration)
+	}
+	h.sourceTimeouts[src] = d
 	return h
 }
 
@@ -207,7 +218,12 @@ func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(idx int, s scraper.Source) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(r.Context(), h.perSourceTimeout)
+
+			timeout := h.perSourceTimeout
+			if t, ok := h.sourceTimeouts[s.Name()]; ok {
+				timeout = t
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
 
 			q := baseQuery
