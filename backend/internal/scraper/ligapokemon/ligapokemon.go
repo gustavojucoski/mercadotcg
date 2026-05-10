@@ -133,13 +133,8 @@ func (c *Client) Search(ctx context.Context, q scraper.Query) ([]scraper.Result,
 		return nil, fmt.Errorf("ligapokemon: extrair JS: %w", err)
 	}
 
-	results := convertStock(stock, stores, cardURL)
-
-	limit := q.Limit
-	if limit <= 0 || limit > len(results) {
-		limit = len(results)
-	}
-	return results[:limit], nil
+	all := convertStock(stock, stores, cardURL)
+	return cheapestPerCondition(all), nil
 }
 
 // resolveCardURL devolve a URL da página de detalhe do card.
@@ -344,6 +339,34 @@ func convertStock(stock []stockEntry, stores map[string]storeInfo, cardURL strin
 		})
 	}
 	return results
+}
+
+// cheapestPerCondition agrupa os listings por condição e retorna o de menor
+// preço de cada grupo, na ordem NM → LP → MP → HP → DMG.
+func cheapestPerCondition(all []scraper.Result) []scraper.Result {
+	best := make(map[string]scraper.Result)
+	for _, r := range all {
+		if r.Condition == "" {
+			continue
+		}
+		if prev, ok := best[r.Condition]; !ok || r.Price.LessThan(prev.Price) {
+			best[r.Condition] = r
+		}
+	}
+	order := []string{
+		string(pricing.ConditionNearMint),
+		string(pricing.ConditionLightlyPlayed),
+		string(pricing.ConditionModeratelyPlayed),
+		string(pricing.ConditionHeavilyPlayed),
+		string(pricing.ConditionDamaged),
+	}
+	out := make([]scraper.Result, 0, len(best))
+	for _, cond := range order {
+		if r, ok := best[cond]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // buildTitle monta um título legível para o resultado.

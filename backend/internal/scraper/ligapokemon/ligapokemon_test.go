@@ -13,21 +13,33 @@ import (
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ligapokemon"
 )
 
+// TestSearch_PikachuEx verifica que a busca retorna o menor preço por condição.
+// Espera no máximo 5 resultados (um por condição disponível: NM, LP, MP, HP, DMG).
 func TestSearch_PikachuEx(t *testing.T) {
 	c := ligapokemon.New(15 * time.Second)
 	results, err := c.Search(context.Background(), scraper.Query{
 		Name:    "Pikachu ex",
 		Number:  "276",
 		SetCode: "ASC",
-		Limit:   20,
 	})
 	if err != nil {
 		t.Fatalf("erro: %v", err)
 	}
-	fmt.Printf("Total de listagens: %d\n", len(results))
+	if len(results) == 0 {
+		t.Fatal("nenhum resultado retornado")
+	}
+	fmt.Printf("Condições disponíveis: %d\n", len(results))
 	for _, r := range results {
-		fmt.Printf("[%s] %s → R$ %s  stock:%d  lang:%s  extra:%s  url:%s\n",
-			r.Condition, r.Title, r.Price, r.Stock, r.Language, r.RawCondition, r.URL)
+		fmt.Printf("[%s] R$ %s — %s  url:%s\n",
+			r.Condition, r.Price, r.Title, r.URL)
+	}
+	// Verifica que não há condição duplicada.
+	seen := make(map[string]bool)
+	for _, r := range results {
+		if seen[r.Condition] {
+			t.Errorf("condição duplicada: %s", r.Condition)
+		}
+		seen[r.Condition] = true
 	}
 }
 
