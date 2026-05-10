@@ -188,6 +188,8 @@ func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 		defer catalogCancel()
 		if info, err := h.catalog.FindCard(catalogCtx, setCode, number); err == nil {
 			baseQuery.Name = info.Name
+			baseQuery.SetName = info.SetName
+			baseQuery.SetPrintedTotal = info.SetPrintedTotal
 
 			resolvedInfo = &resolvedCard{
 				ID:      info.ID,

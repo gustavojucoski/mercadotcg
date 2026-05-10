@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,19 +64,275 @@ func (c *Client) Name() pricing.Source { return pricing.SourceCardmarket }
 // Search implements scraper.Source.
 //
 // ExternalID must be the full Cardmarket card URL (pokemontcg.io cardmarket.url).
-// Returns empty list when ExternalID is empty or bot protection blocks the request.
+// When ExternalID is empty and FlareSolverr is configured, resolution proceeds in order:
+//  1. Special-illustration rares (card number > set.printedTotal): URL is constructed
+//     directly as {SetSlug}/{CardSlug}-{SetCode}{Number} — no set listing fetch needed.
+//     e.g. Pikachu ex SIR 276 → "…/Ascended-Heroes/Pikachu-ex-ASC276"
+//  2. Regular cards: set listing is fetched and the slug with matching number is found.
+//
+// Returns empty list when the URL cannot be found or bot protection blocks the request.
 func (c *Client) Search(ctx context.Context, q scraper.Query) ([]scraper.Result, error) {
-	if q.ExternalID == "" {
+	target := q.ExternalID
+	if target == "" {
+		target = c.resolveTarget(ctx, q)
+	}
+	if target == "" {
 		return []scraper.Result{}, nil
 	}
 
-	body, err := c.fetchBody(ctx, q.ExternalID)
+	body, err := c.fetchBody(ctx, target)
 	if err != nil {
 		return nil, fmt.Errorf("cardmarket: %w", err)
 	}
 
 	entries := parseArticles(body)
-	return cheapestPerCondition(entries, q.Name, q.ExternalID), nil
+	return cheapestPerCondition(entries, q.Name, target), nil
+}
+
+// resolveTarget picks the right Cardmarket product URL for q when ExternalID is absent.
+// For SIR cards the URL is constructed directly (saves one FlareSolverr call).
+// For regular cards the set listing is scraped to find the matching slug.
+func (c *Client) resolveTarget(ctx context.Context, q scraper.Query) string {
+	if c.flareSolverrURL == "" || q.Name == "" || q.SetName == "" {
+		return ""
+	}
+
+	// SIR shortcut: cards numbered above the set's printed total are special-illustration
+	// rares. Cardmarket slugs for SIRs follow {CardName}-{SetCode}{Number} with no V-prefix.
+	// e.g. Pikachu ex 276/217 → "Pikachu-ex-ASC276"
+	if q.SetCode != "" && q.SetPrintedTotal > 0 {
+		if cn := parseCardNumber(q.Number); cn > q.SetPrintedTotal {
+			numStr := q.Number
+			if i := strings.IndexByte(numStr, '/'); i >= 0 {
+				numStr = numStr[:i]
+			}
+			setSlug := toCardmarketSlug(q.SetName)
+			cardSlug := toCardmarketSlug(q.Name)
+			return "https://www.cardmarket.com/en/Pokemon/Products/Singles/" +
+				setSlug + "/" + cardSlug + "-" + strings.ToUpper(q.SetCode) + strings.TrimSpace(numStr)
+		}
+	}
+
+	return c.resolveFromSetListing(ctx, q)
+}
+
+// resolveFromSetListing finds the Cardmarket card URL by fetching the set listing
+// page and searching for a link that matches the card name.
+// Only works when FlareSolverr is configured. Returns "" on any failure.
+//
+// When multiple versions of the same card exist in the set (e.g. regular + SIR
+// Pikachu ex), it uses q.Number and q.SetPrintedTotal to pick the right one:
+//   - card number > printed total → special rare (SIR/IR/etc.) → highest V-number
+//   - card number ≤ printed total → regular → lowest V-number (V1)
+//
+// If q.SetPrintedTotal is 0 and there are multiple matches, returns "" to avoid
+// returning the wrong version.
+func (c *Client) resolveFromSetListing(ctx context.Context, q scraper.Query) string {
+	if c.flareSolverrURL == "" || q.Name == "" || q.SetName == "" {
+		return ""
+	}
+
+	setSlug := toCardmarketSlug(q.SetName)
+	setURL := "https://www.cardmarket.com/en/Pokemon/Products/Singles/" + setSlug
+
+	html, err := c.fetchViaFlareSolverr(ctx, setURL)
+	if err != nil || html == "" {
+		return ""
+	}
+
+	cardSlug := strings.ToLower(toCardmarketSlug(q.Name))
+	linkPrefix := "/en/Pokemon/Products/Singles/" + setSlug + "/"
+
+	// Collect distinct slugs (lowercase) matching the card name prefix.
+	// The same href appears many times in the listing HTML, so deduplicate.
+	seen := make(map[string]struct{})
+	idx := 0
+	for {
+		pos := strings.Index(html[idx:], linkPrefix)
+		if pos < 0 {
+			break
+		}
+		pos += idx
+		start := pos + len(linkPrefix)
+		end := strings.IndexByte(html[start:], '"')
+		if end < 0 {
+			break
+		}
+		slug := html[start : start+end]
+		if strings.HasPrefix(strings.ToLower(slug), cardSlug) {
+			seen[strings.ToLower(slug)] = struct{}{}
+		}
+		idx = pos + 1
+	}
+
+	// Priority 1: exact card-number match.
+	// Cardmarket slugs encode the official card number: "Pikachu-ex-V3-ASC276".
+	// Matching "ASC276" directly is far more reliable than any V-number heuristic.
+	var chosen string
+	if cardNum := parseCardNumber(q.Number); cardNum > 0 {
+		for slug := range seen {
+			if slugContainsNumber(slug, q.SetCode, cardNum) {
+				chosen = slug
+				break
+			}
+		}
+	}
+
+	// Priority 2: fallback when the exact number isn't on this page.
+	if chosen == "" {
+		switch len(seen) {
+		case 0:
+			return ""
+		case 1:
+			for s := range seen {
+				chosen = s
+			}
+			// Single match but not the exact number we want — could be a different
+			// version of the card (e.g. regular V1 while the SIR V3 is on a later page).
+			// If the card is a special rare and what we found is V1, skip it to avoid
+			// returning the cheap regular version instead of the SIR.
+			if q.SetPrintedTotal > 0 && extractVNumber(chosen) == 1 {
+				if cn := parseCardNumber(q.Number); cn > q.SetPrintedTotal {
+					return ""
+				}
+			}
+		default:
+			chosen = pickByVNumber(seen, q.Number, q.SetPrintedTotal)
+			if chosen == "" {
+				return ""
+			}
+		}
+	}
+
+	orig := findSlugOrigCase(html, linkPrefix, chosen)
+	return "https://www.cardmarket.com" + linkPrefix + orig
+}
+
+// parseCardNumber converts "276" or "276/217" to 276.
+func parseCardNumber(s string) int {
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(s))
+	return n
+}
+
+// slugContainsNumber reports whether the Cardmarket slug (lowercase) encodes the
+// given card number for the given set code.
+// e.g. slugContainsNumber("pikachu-ex-v3-asc276", "ASC", 276) → true
+//      slugContainsNumber("pikachu-ex-v1-asc057", "ASC", 276) → false
+// Handles zero-padded slugs ("asc057" matches cardNum=57).
+func slugContainsNumber(slug, setCode string, cardNum int) bool {
+	prefix := strings.ToLower(setCode)
+	idx := strings.LastIndex(slug, prefix)
+	if idx < 0 {
+		return false
+	}
+	n, err := strconv.Atoi(slug[idx+len(prefix):])
+	return err == nil && n == cardNum
+}
+
+// pickByVNumber selects the slug with the appropriate Cardmarket V-number:
+//   - special rare (cardNumber > printedTotal) → highest V (rarest version)
+//   - regular card (cardNumber ≤ printedTotal) → lowest V (most common version)
+//
+// Returns "" if printedTotal is 0 (unknown) or no slugs have parseable V-numbers.
+func pickByVNumber(seen map[string]struct{}, cardNumber string, printedTotal int) string {
+	if printedTotal == 0 {
+		return ""
+	}
+	cardNum := parseCardNumber(cardNumber)
+	if cardNum == 0 {
+		return ""
+	}
+
+	specialRare := cardNum > printedTotal
+
+	best := ""
+	bestV := 0
+	for slug := range seen {
+		v := extractVNumber(slug)
+		if v == 0 {
+			continue
+		}
+		if best == "" {
+			best = slug
+			bestV = v
+			continue
+		}
+		if specialRare && v > bestV {
+			best = slug
+			bestV = v
+		} else if !specialRare && v < bestV {
+			best = slug
+			bestV = v
+		}
+	}
+	return best
+}
+
+// extractVNumber parses the V-number from a Cardmarket slug.
+// e.g. "pikachu-ex-v3-asc276" → 3, "mega-dragonite-ex-v1-asc152" → 1.
+func extractVNumber(slug string) int {
+	for _, part := range strings.Split(slug, "-") {
+		if len(part) >= 2 && (part[0] == 'v' || part[0] == 'V') {
+			if n, err := strconv.Atoi(part[1:]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// findSlugOrigCase returns the original-cased slug from the HTML that lowercases to lowerSlug.
+func findSlugOrigCase(html, linkPrefix, lowerSlug string) string {
+	idx := 0
+	for {
+		pos := strings.Index(html[idx:], linkPrefix)
+		if pos < 0 {
+			break
+		}
+		pos += idx
+		start := pos + len(linkPrefix)
+		end := strings.IndexByte(html[start:], '"')
+		if end < 0 {
+			break
+		}
+		slug := html[start : start+end]
+		if strings.ToLower(slug) == lowerSlug {
+			return slug
+		}
+		idx = pos + 1
+	}
+	return lowerSlug
+}
+
+// toCardmarketSlug converts a name like "Ascended Heroes" to the Cardmarket
+// URL slug "Ascended-Heroes". Handles apostrophes, ampersands, and accented chars.
+func toCardmarketSlug(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == ' ':
+			b.WriteRune('-')
+		case r == '\'', r == '’': // apostrophes
+			// skip
+		case r == '&':
+			// skip
+		case r == 'é':
+			b.WriteRune('e')
+		case r == 'ü':
+			b.WriteRune('u')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	// collapse consecutive hyphens
+	result := b.String()
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	return strings.Trim(result, "-")
 }
 
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
@@ -182,8 +439,15 @@ func (c *Client) fetchViaFlareSolverr(ctx context.Context, target string) (strin
 	if fsResp.Status != "ok" {
 		return "", fmt.Errorf("flaresolverr: status=%q", fsResp.Status)
 	}
-	if fsResp.Solution.Status < 200 || fsResp.Solution.Status >= 300 {
-		return "", fmt.Errorf("flaresolverr: target status %d", fsResp.Solution.Status)
+	// Treat 404/503 as "not found" — same as fetchDirect does for 403/503.
+	// A constructed SIR URL for a card not yet listed on CM returns 404; callers
+	// handle empty body as empty results.
+	s := fsResp.Solution.Status
+	if s == 404 || s == 503 {
+		return "", nil
+	}
+	if s < 200 || s >= 300 {
+		return "", fmt.Errorf("flaresolverr: target status %d", s)
 	}
 
 	return fsResp.Solution.Response, nil
@@ -203,15 +467,21 @@ type selectorStrategy struct {
 }
 
 // strategies are tried in order; first one that yields any articles wins.
+//
+// Confirmed against live Cardmarket HTML (2025-05):
+//   <div id="articleRow{ID}" class="row g-0 article-row">
+//     …
+//     <a class="article-condition condition-nm me-1" …>
+//       <span class="badge ">NM</span>
+//     </a>
+//     …
+//     <div class="price-container …">
+//       <span class="color-primary … fw-bold ">1,00 €</span>
+//     </div>
+//   </div>
 var strategies = []selectorStrategy{
-	// Cardmarket post-2024 Vue UI
-	{"div.article-row", "div.product-comments a", "div.price-container span.color-primary"},
-	{"div.article-row", "div.article-condition a", "div.price-container span.color-primary"},
-	// Older/alternative UI
-	{"article.single-card", "span.condition-label", "span.article-unit-price"},
-	{"div.single-card", "span.condition-label", "span.article-unit-price"},
-	// Generic fallback: any table row that has condition text + price
-	{"tr.article", "td.condition", "td.price span"},
+	// Cardmarket 2024+ Bootstrap UI (confirmed live)
+	{"div.article-row", "a.article-condition span.badge", "div.price-container span.color-primary"},
 }
 
 func parseArticles(body string) []articleEntry {

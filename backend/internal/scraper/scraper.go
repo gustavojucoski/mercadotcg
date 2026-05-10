@@ -24,11 +24,13 @@ var ErrNotConfigured = errors.New("scraper: source não configurada")
 // Query é o critério de busca. Pelo menos um campo precisa estar preenchido;
 // cada fonte decide quais usa (Liga combina nome+número; eBay só nome).
 type Query struct {
-	Name       string // nome da carta — "Charizard ex"
-	Number     string // número canônico — "199/191" ou só "199"
-	SetCode    string // código do set — "sv8" (nem toda fonte aceita)
-	ExternalID string // ID nativo da fonte (ex: product ID do TCGPlayer — "676088")
-	Limit      int    // máximo de resultados desejados (cada fonte respeita ou ignora)
+	Name            string // nome da carta — "Charizard ex"
+	Number          string // número canônico — "199/191" ou só "199"
+	SetCode         string // código do set — "sv8" (nem toda fonte aceita)
+	SetName         string // nome do set em inglês — "Ascended Heroes" (Cardmarket resolver)
+	SetPrintedTotal int    // total de cartas numeradas do set (sem secret rares) — ex.: 217
+	ExternalID      string // ID nativo da fonte (ex: product ID do TCGPlayer — "676088")
+	Limit           int    // máximo de resultados desejados (cada fonte respeita ou ignora)
 }
 
 // Result é uma observação bruta extraída de uma fonte.

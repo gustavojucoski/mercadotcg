@@ -55,6 +55,7 @@ type CardInfo struct {
 	Number           string                    // número no set, ex.: "276"
 	SetCode          string                    // ptcgoCode, ex.: "ASC"
 	SetName          string                    // nome do set, ex.: "Ascended Heroes"
+	SetPrintedTotal  int                       // total de cartas numeradas no set (sem secret rares), ex.: 217
 	TCGPlayerID      string                    // product ID no TCGPlayer; vazio se redirect falhou
 	TCGPlayerURL     string                    // URL canonical do TCGPlayer (prices.pokemontcg.io)
 	TCGPlayerPrices  map[string]TCGPriceRange  // preços por impressão: "holofoil", "normal", "reverseHolofoil"
@@ -135,8 +136,9 @@ func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardIn
 			Name   string `json:"name"`
 			Number string `json:"number"`
 			Set    struct {
-				PtcgoCode string `json:"ptcgoCode"`
-				Name      string `json:"name"`
+				PtcgoCode    string `json:"ptcgoCode"`
+				Name         string `json:"name"`
+				PrintedTotal int    `json:"printedTotal"`
 			} `json:"set"`
 			TCGPlayer struct {
 				URL    string                   `json:"url"`
@@ -162,6 +164,7 @@ func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardIn
 		Number:           d.Number,
 		SetCode:          d.Set.PtcgoCode,
 		SetName:          d.Set.Name,
+		SetPrintedTotal:  d.Set.PrintedTotal,
 		TCGPlayerURL:     d.TCGPlayer.URL,
 		TCGPlayerPrices:  d.TCGPlayer.Prices,
 		CardmarketURL:    d.Cardmarket.URL,

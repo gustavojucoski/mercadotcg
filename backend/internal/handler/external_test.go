@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/pricing"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/handler"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/cardmarket"
@@ -57,7 +59,21 @@ func newRouter(t *testing.T) *chi.Mux {
 		ebay.New(20*time.Second),
 		cardmarket.New(20*time.Second),
 	).WithCatalog(catalog)
+	r := chi.NewRouter()
+	h.Routes(r)
+	return r
+}
 
+func newRouterWithFlareSolverr(t *testing.T, fsURL string) *chi.Mux {
+	t.Helper()
+	const cmTimeout = 90 * time.Second
+	catalog := pokemontcgio.New(15*time.Second, "")
+	h := handler.NewExternalHandler(
+		ligapokemon.New(20*time.Second),
+		tcgplayer.New(20*time.Second),
+		ebay.New(20*time.Second),
+		cardmarket.NewWithFlareSolverr(cmTimeout, fsURL),
+	).WithCatalog(catalog).WithSourceTimeout(pricing.SourceCardmarket, cmTimeout)
 	r := chi.NewRouter()
 	h.Routes(r)
 	return r
@@ -158,8 +174,9 @@ func TestExternalSearch_SemParametros(t *testing.T) {
 }
 
 // TestExternalSearch_MegaDragoniteEx verifica o card 290 (Mega Dragonite ex).
-// Esse card não tem tcgplayer.url no pokemontcg.io, mas o fallback via Scrydex
-// resolve o product ID e deve retornar resultados do TCGPlayer.
+// Esse card não tem tcgplayer.url nem cardmarket.url no pokemontcg.io, mas:
+// - TCGPlayer: fallback via Scrydex resolve o product ID
+// - Cardmarket: fallback via resolveFromSetListing (requer FLARESOLVERR_URL)
 func TestExternalSearch_MegaDragoniteEx(t *testing.T) {
 	r := newRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/external-search?number=290&set=ASC&limit=5", nil)
@@ -197,5 +214,53 @@ func TestExternalSearch_MegaDragoniteEx(t *testing.T) {
 	}
 	if !tcgOK {
 		t.Error("fonte tcgplayer ausente na resposta")
+	}
+}
+
+// TestExternalSearch_MegaDragoniteEx_ComFlareSolverr testa o card 290 com FlareSolverr
+// real — verifica que Cardmarket também retorna resultados via resolveFromSetListing.
+// Requer FLARESOLVERR_URL no ambiente; caso contrário o teste é pulado.
+func TestExternalSearch_MegaDragoniteEx_ComFlareSolverr(t *testing.T) {
+	fsURL := os.Getenv("FLARESOLVERR_URL")
+	if fsURL == "" {
+		t.Skip("FLARESOLVERR_URL não configurado — pulando teste live com FlareSolverr")
+	}
+
+	r := newRouterWithFlareSolverr(t, fsURL)
+	req := httptest.NewRequest(http.MethodGet, "/external-search?number=290&set=ASC&limit=5", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp externalSearchResp
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, src := range resp.Sources {
+		fmt.Printf("[%s] %dms  err=%q  resultados=%d\n",
+			src.Source, src.DurationMs, src.Error, len(src.Results))
+		for _, res := range src.Results {
+			fmt.Printf("    %s %s %s — %s\n", res.Currency, res.Price, res.Condition, res.Title)
+		}
+		if src.Error != "" {
+			t.Errorf("[%s] erro inesperado: %s", src.Source, src.Error)
+		}
+	}
+
+	for _, src := range resp.Sources {
+		switch src.Source {
+		case "tcgplayer":
+			if len(src.Results) == 0 {
+				t.Error("tcgplayer: nenhum resultado")
+			}
+		case "cardmarket":
+			if len(src.Results) == 0 {
+				t.Error("cardmarket: nenhum resultado — resolveFromSetListing falhou?")
+			}
+		}
 	}
 }

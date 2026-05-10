@@ -95,7 +95,7 @@ func main() {
 	// eBay: vendas via Scrydex; ExternalID = pokemontcg.io card ID (USD).
 	// Cardmarket: via FlareSolverr se FLARESOLVERR_URL configurado; caso contrário
 	//   tentativa direta (provavelmente 403) e fallback via pokemontcg.io (EUR).
-	const cmTimeout = 70 * time.Second // FlareSolverr pode levar até 60s
+	const cmTimeout = 90 * time.Second // resolveFromSetListing faz 2 chamadas ao FlareSolverr (~26s total)
 	var cmScraper scraper.Source
 	if cfg.FlareSolverrURL != "" {
 		cmScraper = cardmarket.NewWithFlareSolverr(cmTimeout, cfg.FlareSolverrURL)
