@@ -94,10 +94,23 @@ MercadoTCG/
 **Razão:** Misturar IDs ambíguos polui a série temporal e destrói o sinal. Preferimos perder amplitude (deixar de ingerir) a perder precisão (ingerir errado).
 **Trade-off aceito:** Bootstrap precisa de matching manual ou semi-automático para popular as primeiras refs. Confidence < 100 sinaliza matches que precisam de revisão.
 
-### ADR-011 — Estratégia por fonte: scraping vs API oficial
-**Decisão:** **LigaPokemon** = scraping HTML (sem API pública). **TCGplayer** = API oficial (tem free tier com credenciais; HTML é JS-pesado e rate-limitado). **eBay** = API Browse / Marketplace Insights (HTML deles é hostil).
-**Razão:** Scraping de TCGplayer e eBay tem custo de manutenção alto (mudam estrutura, bloqueiam IPs). Para essas fontes, vale o investimento de credenciais.
-**Trade-off aceito:** TCGplayer e eBay vão pedir cadastro de developer e armazenamento de API keys (config + secrets manager).
+### ADR-011 — Estratégia por fonte: scraping vs API
+**Decisão:** **LigaPokemon** = scraping HTML via goquery (sem API pública). **TCGplayer** = endpoint não-documentado `mpapi.tcgplayer.com/v2/product/{id}/pricepoints` (sem credenciais). **eBay** = Browse API oficial com credenciais. **Cardmarket** = preços via pokemontcg.io (campo `cardmarket.prices` em EUR).
+**Razão:** O mpapi do TCGPlayer não exige autenticação e retorna o market price por tipo de impressão, que é suficiente para o use-case atual. Cardmarket é coberto gratuitamente via pokemontcg.io. eBay ainda exige credenciais.
+**Trade-off aceito:** `mpapi` é endpoint não-documentado — pode mudar sem aviso. Preços de condição (LP/MP/HP/DMG) no TCGPlayer são derivados do NM com multiplicadores padrão (ver ADR-012), não coletados individualmente.
+
+### ADR-012 — Resolução de product ID do TCGPlayer via pokemontcg.io + Scrydex fallback
+**Decisão:** Para obter o product ID do TCGPlayer a partir de um card pokemontcg.io:
+1. **Estratégia primária**: `HEAD prices.pokemontcg.io/tcgplayer/{card-id}` → redirect 302 → `tcgplayer.pxf.io/scrydex?u=https://tcgplayer.com/product/{id}` → extrai ID do path.
+2. **Fallback**: `GET scrydex.com/pokemon/cards/{card-id}/purchase?variant=holofoil` → mesmo formato de redirect → extrai ID.
+O fallback cobre cards que o pokemontcg.io ainda não mapeou mas o Scrydex já tem (ex.: cards novos do set ASC).
+**Razão:** A estratégia primária cobre ~80% dos cards; o Scrydex (parceiro afiliado oficial do TCGPlayer) tem cobertura maior e usa o mesmo mecanismo de redirect afiliado.
+**Trade-off aceito:** Ambos os redirects são best-effort com timeout de 5s — se falharem, o product ID fica vazio e TCGPlayer retorna lista vazia para esse card.
+
+### ADR-013 — Preços TCGPlayer por condição via multiplicadores
+**Decisão:** O `marketPrice` da pricepoints API representa o preço de mercado NM. Derivamos LP/MP/HP/DMG aplicando multiplicadores padrão: NM=100%, LP=80%, MP=64%, HP=40%, DMG=24%.
+**Razão:** A API pública do TCGPlayer não tem endpoint de preços por condição sem credenciais. Os multiplicadores são os mesmos que o TCGPlayer usa internamente e que aparecem na interface do site.
+**Trade-off aceito:** São preços estimados, não preços de listagens reais por condição. Para uso no MVP de referência de preço isso é aceitável; se precisarmos de preços exatos por condição futuramente, precisaremos das credenciais da API oficial.
 
 ## 5. Status Atual
 
@@ -136,12 +149,19 @@ Adicionado em 2026-05-09 (fase 5, busca AO VIVO + catálogo):
 
 - `internal/scraper/scraper.go` — interface `Source` (Name, Search), tipos `Query`, `Result`, `SourceResult`. Sentinel `ErrNotConfigured` para fontes sem credencial. Helper `MeasureSearch` empacota duração+erro de cada fonte.
 - `internal/scraper/ligapokemon/` — scraper HTML com goquery. **Best-effort**: seletores CSS escritos sem acesso ao HTML real do site, vai precisar iteração na primeira run. Defensivo: cada parse de produto falha silenciosamente sem quebrar a busca. Parsing brasileiro de preço (R$ 1.298,40) tratado em `parseBRLPrice`.
-- `internal/scraper/tcgplayer/` — cliente OAuth + REST API oficial. Cache de bearer token. Sem credenciais → ErrNotConfigured.
+- `internal/scraper/tcgplayer/` — endpoint não-documentado `mpapi.tcgplayer.com/v2/product/{id}/pricepoints`. Sem ExternalID (product ID) → lista vazia sem erro. Gera 1 resultado por condição (NM/LP/MP/HP/DMG) via multiplicadores sobre o `marketPrice` NM.
 - `internal/scraper/ebay/` — Browse API oficial. OAuth client_credentials. Filtra categoria 183454 (Pokemon TCG). Sem credenciais → ErrNotConfigured.
-- Handler `GET /api/v1/external-search` — fan-out paralelo via goroutines + WaitGroup, timeout independente por fonte (12s). Resposta inclui `duration_ms` e `error` por fonte. Funciona pra qualquer carta porque não depende do catálogo interno.
+- Handler `GET /external-search` — aceita **apenas** `number` + `set` (ambos obrigatórios). Fan-out paralelo via goroutines + WaitGroup, timeout independente por fonte (12s). Resposta inclui `duration_ms` e `error` por fonte.
 - `cmd/import-catalog` — importador da Pokemon TCG API (https://pokemontcg.io). Paginação automática, idempotente. Heurística de variantes: cria `normal` sempre; adiciona `holo` ou `reverse_holo` se a raridade indicar. Suporta `--set <code>` e `--recent <N>` para imports parciais.
 - Config ganhou `TCGPlayerPublicKey/PrivateKey`, `EbayClientID/ClientSecret`, `PokemonTCGAPIKey` (todas opcionais). `.env.example` documenta como obter.
 - docker-compose: serviço `import-catalog` sob profile `catalog` — não sobe em `up` normal, dispara via `docker compose --profile catalog run --rm import-catalog`.
+
+Adicionado em 2026-05-10 (refinamento do external-search):
+
+- `internal/pokemontcgio/client.go` — `CardInfo` ganhou `CardmarketURL` e `CardmarketPrices *CardmarketPriceRange` (preços EUR: `averageSellPrice`, `lowPrice`, `trendPrice`, `avg1/7/30`). Query agora inclui `select=...,cardmarket`. Resolução de product ID do TCGPlayer ganhou fallback via Scrydex: `GET scrydex.com/pokemon/cards/{id}/purchase?variant=holofoil` → redirect → extrai product ID (cobre cards sem `tcgplayer.url` no pokemontcg.io, como cards novos do set ASC).
+- `internal/handler/external.go` — endpoint requer obrigatoriamente `number` + `set` (removido parâmetro `name`). Adicionada função `cardmarketResultsFromCatalog` que injeta preços Cardmarket em EUR como fonte sintética quando pokemontcg.io retorna dados. Fallback TCGPlayer via preços do catálogo mantido para cards com `tcgplayer.prices` mas sem product ID.
+- `internal/scraper/tcgplayer/tcgplayer.go` — removida abordagem OAuth. Agora usa `mpapi.tcgplayer.com/v2/product/{id}/pricepoints` sem autenticação. Gera 5 resultados por tipo de impressão (NM/LP/MP/HP/DMG) aplicando multiplicadores sobre o `marketPrice` NM: LP=80%, MP=64%, HP=40%, DMG=24%.
+- `internal/domain/pricing/pricing.go` — adicionada função `ConditionFromTCG(s string) Condition` para normalizar strings de condição.
 
 Adicionado em 2026-05-09 (fase 4, lookup multi-fonte multi-condição):
 
@@ -167,12 +187,11 @@ Adicionado em 2026-05-09 (fase 3, lojas + estoque + matching):
 
 ## 6. Próximos Passos (priorizados)
 
-Ordem reorganizada em 2026-05-09 (fase 3) — pivot para gestão de loja própria primeiro.
+Ordem atualizada em 2026-05-10.
 
-1. **Scraper LigaPokemon** — `internal/scraper/ligapokemon` com `goquery`. Implementa `Source` interface: `SearchByName`, `FetchListings`. Persiste raw em uma staging table OU vai direto pra `price_history` se já há `external_card_ref` para o item.
-2. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id por (set.code + cards.number + finish). Se sucesso com confidence alta, cria automaticamente o `external_card_ref`. Senão, fila de revisão manual.
-3. **Adapters TCGplayer e eBay** — usar API oficial (não scraping HTML). Cadastro de credenciais no `.env`. Cobrir as 3 fontes pedidas pelo usuário.
-4. **Handlers HTTP — store/stock**:
+1. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id por (set.code + cards.number + finish). Se sucesso com confidence alta, cria automaticamente o `external_card_ref`. Senão, fila de revisão manual.
+2. **eBay com credenciais** — único scraper que ainda requer credenciais (Browse API). Cadastro de developer e config no `.env`.
+3. **Handlers HTTP — store/stock**:
    - `POST /stores` (criar loja)
    - `POST /stores/{id}/stock/purchase` (registrar compra)
    - `POST /stock-items/{id}/sale` (registrar venda)

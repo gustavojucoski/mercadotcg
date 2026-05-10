@@ -27,7 +27,20 @@ func TestFindCard_PikachuEx(t *testing.T) {
 	fmt.Printf("TCGPlayerURL: %s\n", info.TCGPlayerURL)
 	for k, p := range info.TCGPlayerPrices {
 		if p.Market != nil {
-			fmt.Printf("  Prices[%s].market: %.2f USD\n", k, *p.Market)
+			fmt.Printf("  TCGPrices[%s].market: %.2f USD\n", k, *p.Market)
+		}
+	}
+	fmt.Printf("CardmarketURL: %s\n", info.CardmarketURL)
+	if info.CardmarketPrices != nil {
+		p := info.CardmarketPrices
+		if p.TrendPrice != nil {
+			fmt.Printf("  Cardmarket.trend: %.2f EUR\n", *p.TrendPrice)
+		}
+		if p.AverageSellPrice != nil {
+			fmt.Printf("  Cardmarket.avgSell: %.2f EUR\n", *p.AverageSellPrice)
+		}
+		if p.LowPrice != nil {
+			fmt.Printf("  Cardmarket.low: %.2f EUR\n", *p.LowPrice)
 		}
 	}
 
@@ -50,6 +63,19 @@ func TestFindCard_PikachuEx(t *testing.T) {
 		}
 	} else {
 		t.Log("TCGPlayerPrices vazio — pokemontcg.io não retornou preços para esse card (aceitável)")
+	}
+	// CardmarketPrices é best-effort — sets novos podem não ter dados ainda.
+	if info.CardmarketPrices != nil {
+		p := info.CardmarketPrices
+		t.Logf("CardmarketPrices disponível")
+		if p.TrendPrice != nil {
+			t.Logf("  trend=%.2f EUR", *p.TrendPrice)
+		}
+		if p.AverageSellPrice != nil {
+			t.Logf("  avgSell=%.2f EUR", *p.AverageSellPrice)
+		}
+	} else {
+		t.Log("CardmarketPrices nil — pokemontcg.io não retornou preços Cardmarket para esse card (aceitável)")
 	}
 	// TCGPlayerID é best-effort — pode falhar por rate-limit no redirect.
 	if info.TCGPlayerID == "" {

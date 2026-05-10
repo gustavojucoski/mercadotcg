@@ -3,6 +3,7 @@
 package pricing
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,13 +14,30 @@ import (
 type Condition string
 
 const (
-	ConditionNearMint        Condition = "NM"
-	ConditionLightlyPlayed   Condition = "LP"
+	ConditionNearMint         Condition = "NM"
+	ConditionLightlyPlayed    Condition = "LP"
 	ConditionModeratelyPlayed Condition = "MP"
-	ConditionHeavilyPlayed   Condition = "HP"
-	ConditionDamaged         Condition = "DMG"
-	ConditionGraded          Condition = "GRADED"
+	ConditionHeavilyPlayed    Condition = "HP"
+	ConditionDamaged          Condition = "DMG"
+	ConditionGraded           Condition = "GRADED"
 )
+
+// ConditionFromTCG converte strings de condição (NM, LP, MP, HP, DMG) para Condition.
+func ConditionFromTCG(s string) Condition {
+	switch strings.ToUpper(s) {
+	case "NM", "NEAR MINT":
+		return ConditionNearMint
+	case "LP", "LIGHTLY PLAYED":
+		return ConditionLightlyPlayed
+	case "MP", "MODERATELY PLAYED":
+		return ConditionModeratelyPlayed
+	case "HP", "HEAVILY PLAYED":
+		return ConditionHeavilyPlayed
+	case "DMG", "DAMAGED":
+		return ConditionDamaged
+	}
+	return ""
+}
 
 // Source identifica de onde veio uma observação de preço.
 type Source string

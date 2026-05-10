@@ -35,18 +35,18 @@ func TestSearch_PikachuEx(t *testing.T) {
 	}
 }
 
-// TestSearch_SemExternalID verifica que ErrNotConfigured é retornado
-// quando não há ExternalID (TCGplayer não tem API de busca pública).
+// TestSearch_SemExternalID verifica que sem ExternalID retorna lista vazia sem erro.
+// Card sem product ID no TCGPlayer é situação normal (data gap no pokemontcg.io).
 func TestSearch_SemExternalID(t *testing.T) {
 	c := tcgplayer.New(5 * time.Second)
-	_, err := c.Search(context.Background(), scraper.Query{
+	results, err := c.Search(context.Background(), scraper.Query{
 		Name:  "Pikachu ex",
 		Limit: 5,
 	})
-	if err == nil {
-		t.Fatal("esperava erro, mas não houve")
+	if err != nil {
+		t.Fatalf("esperava nil, mas got: %v", err)
 	}
-	if err.Error() != scraper.ErrNotConfigured.Error() {
-		t.Fatalf("erro inesperado: %v (esperava ErrNotConfigured)", err)
+	if len(results) != 0 {
+		t.Fatalf("esperava 0 resultados, got %d", len(results))
 	}
 }

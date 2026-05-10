@@ -137,22 +137,30 @@ func TestExternalSearch_NumberAndSet(t *testing.T) {
 	}
 }
 
-// TestExternalSearch_SemParametros verifica rejeição de request sem parâmetros.
+// TestExternalSearch_SemParametros verifica rejeição quando number ou set estão ausentes.
 func TestExternalSearch_SemParametros(t *testing.T) {
 	r := newRouter(t)
-	req := httptest.NewRequest(http.MethodGet, "/external-search", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("esperava 400, got %d", w.Code)
+	cases := []string{
+		"/external-search",
+		"/external-search?number=276",
+		"/external-search?set=ASC",
+	}
+	for _, url := range cases {
+		req := httptest.NewRequest(http.MethodGet, url, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: esperava 400, got %d", url, w.Code)
+		}
 	}
 }
 
-// TestExternalSearch_ApenasName funciona sem number+set (sem resolução de catálogo).
-func TestExternalSearch_ApenasName(t *testing.T) {
+// TestExternalSearch_MegaDragoniteEx verifica o card 290 (Mega Dragonite ex).
+// Esse card não tem tcgplayer.url no pokemontcg.io, mas o fallback via Scrydex
+// resolve o product ID e deve retornar resultados do TCGPlayer.
+func TestExternalSearch_MegaDragoniteEx(t *testing.T) {
 	r := newRouter(t)
-	req := httptest.NewRequest(http.MethodGet, "/external-search?name=Pikachu+ex&limit=3", nil)
+	req := httptest.NewRequest(http.MethodGet, "/external-search?number=290&set=ASC&limit=5", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -164,12 +172,28 @@ func TestExternalSearch_ApenasName(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// Sem number+set, card deve ser nil (sem resolução de catálogo).
-	if resp.Card != nil {
-		t.Logf("card resolvido mesmo sem number+set: %v", resp.Card)
-	}
+
 	for _, src := range resp.Sources {
 		fmt.Printf("[%s] %dms  err=%q  resultados=%d\n",
 			src.Source, src.DurationMs, src.Error, len(src.Results))
+		for _, res := range src.Results {
+			fmt.Printf("    %s %s %s — %s\n", res.Currency, res.Price, res.Condition, res.Title)
+		}
+		if src.Error != "" && src.Source != "ebay" { // ebay sem credenciais → ErrNotConfigured esperado
+			t.Errorf("[%s] erro inesperado: %s", src.Source, src.Error)
+		}
+	}
+
+	tcgOK := false
+	for _, src := range resp.Sources {
+		if src.Source == "tcgplayer" {
+			if len(src.Results) == 0 {
+				t.Error("tcgplayer: nenhum resultado — fallback Scrydex falhou?")
+			}
+			tcgOK = true
+		}
+	}
+	if !tcgOK {
+		t.Error("fonte tcgplayer ausente na resposta")
 	}
 }

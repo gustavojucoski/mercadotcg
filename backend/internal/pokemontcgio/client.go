@@ -37,16 +37,29 @@ type TCGPriceRange struct {
 	Market *float64 `json:"market"`
 }
 
+// CardmarketPriceRange contém os pontos de preço do Cardmarket (EUR).
+// Todos os campos são ponteiros porque podem ser nulos na resposta da API.
+type CardmarketPriceRange struct {
+	AverageSellPrice *float64 `json:"averageSellPrice"`
+	LowPrice         *float64 `json:"lowPrice"`
+	TrendPrice       *float64 `json:"trendPrice"`
+	Avg1             *float64 `json:"avg1"`
+	Avg7             *float64 `json:"avg7"`
+	Avg30            *float64 `json:"avg30"`
+}
+
 // CardInfo contém os dados resolvidos de uma carta.
 type CardInfo struct {
-	ID              string                    // pokemontcg.io card ID, ex.: "me2pt5-276"
-	Name            string                    // nome em inglês, ex.: "Pikachu ex"
-	Number          string                    // número no set, ex.: "276"
-	SetCode         string                    // ptcgoCode, ex.: "ASC"
-	SetName         string                    // nome do set, ex.: "Ascended Heroes"
-	TCGPlayerID     string                    // product ID no TCGPlayer; vazio se redirect falhou
-	TCGPlayerURL    string                    // URL canonical do TCGPlayer (prices.pokemontcg.io)
-	TCGPlayerPrices map[string]TCGPriceRange  // preços por impressão: "holofoil", "normal", "reverseHolofoil"
+	ID               string                    // pokemontcg.io card ID, ex.: "me2pt5-276"
+	Name             string                    // nome em inglês, ex.: "Pikachu ex"
+	Number           string                    // número no set, ex.: "276"
+	SetCode          string                    // ptcgoCode, ex.: "ASC"
+	SetName          string                    // nome do set, ex.: "Ascended Heroes"
+	TCGPlayerID      string                    // product ID no TCGPlayer; vazio se redirect falhou
+	TCGPlayerURL     string                    // URL canonical do TCGPlayer (prices.pokemontcg.io)
+	TCGPlayerPrices  map[string]TCGPriceRange  // preços por impressão: "holofoil", "normal", "reverseHolofoil"
+	CardmarketURL    string                    // URL canonical do Cardmarket (prices.pokemontcg.io)
+	CardmarketPrices *CardmarketPriceRange     // preços em EUR; nil se pokemontcg.io não retornou
 }
 
 type cacheEntry struct {
@@ -94,7 +107,7 @@ func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardIn
 	c.mu.Unlock()
 
 	q := fmt.Sprintf("set.ptcgoCode:%s number:%s", ptcgoCode, number)
-	target := fmt.Sprintf("%s/cards?q=%s&pageSize=1&select=id,name,number,set,tcgplayer",
+	target := fmt.Sprintf("%s/cards?q=%s&pageSize=1&select=id,name,number,set,tcgplayer,cardmarket",
 		apiBase, url.QueryEscape(q))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -126,9 +139,13 @@ func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardIn
 				Name      string `json:"name"`
 			} `json:"set"`
 			TCGPlayer struct {
-				URL    string                    `json:"url"`
-				Prices map[string]TCGPriceRange  `json:"prices"`
+				URL    string                   `json:"url"`
+				Prices map[string]TCGPriceRange `json:"prices"`
 			} `json:"tcgplayer"`
+			Cardmarket struct {
+				URL    string                `json:"url"`
+				Prices *CardmarketPriceRange `json:"prices"`
+			} `json:"cardmarket"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -140,22 +157,34 @@ func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardIn
 
 	d := body.Data[0]
 	info := CardInfo{
-		ID:              d.ID,
-		Name:            d.Name,
-		Number:          d.Number,
-		SetCode:         d.Set.PtcgoCode,
-		SetName:         d.Set.Name,
-		TCGPlayerURL:    d.TCGPlayer.URL,
-		TCGPlayerPrices: d.TCGPlayer.Prices,
+		ID:               d.ID,
+		Name:             d.Name,
+		Number:           d.Number,
+		SetCode:          d.Set.PtcgoCode,
+		SetName:          d.Set.Name,
+		TCGPlayerURL:     d.TCGPlayer.URL,
+		TCGPlayerPrices:  d.TCGPlayer.Prices,
+		CardmarketURL:    d.Cardmarket.URL,
+		CardmarketPrices: d.Cardmarket.Prices,
 	}
 
 	// Tenta resolver o product ID via redirect — best-effort (não-fatal se a API rate-limitar).
+	// Estratégia 1: usa o tcgplayer.url do pokemontcg.io (prices.pokemontcg.io/tcgplayer/{id}).
+	// Estratégia 2 (fallback): Scrydex mapeia todos os cards mesmo sem entry no pokemontcg.io;
+	//   GET scrydex.com/pokemon/cards/{id}/purchase?variant=holofoil → 302 → tcgplayer.com/product/{id}
+	redirectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	if d.TCGPlayer.URL != "" {
-		redirectCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 		if tcgID, err := c.resolveTCGPlayerID(redirectCtx, d.TCGPlayer.URL); err == nil {
 			info.TCGPlayerID = tcgID
 		}
-		cancel()
+	}
+	if info.TCGPlayerID == "" {
+		scrydexPurchaseURL := fmt.Sprintf("https://scrydex.com/pokemon/cards/%s/purchase?variant=holofoil", d.ID)
+		if tcgID, err := c.resolveTCGPlayerID(redirectCtx, scrydexPurchaseURL); err == nil {
+			info.TCGPlayerID = tcgID
+		}
 	}
 
 	c.mu.Lock()

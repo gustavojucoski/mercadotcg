@@ -40,6 +40,50 @@ func tcgPricesFromCatalog(prices map[string]pokemontcgio.TCGPriceRange, cardURL 
 	return results
 }
 
+// cardmarketResultsFromCatalog converte os preços do Cardmarket (pokemontcg.io) em resultados.
+func cardmarketResultsFromCatalog(p *pokemontcgio.CardmarketPriceRange, name, cardURL string) []scraper.Result {
+	if p == nil {
+		return nil
+	}
+	// Prefere trendPrice → averageSellPrice como referência principal.
+	pick := func(v *float64) (decimal.Decimal, bool) {
+		if v == nil || *v == 0 {
+			return decimal.Zero, false
+		}
+		return decimal.NewFromFloat(*v), true
+	}
+	type entry struct {
+		label string
+		val   *float64
+	}
+	candidates := []entry{
+		{"Trend", p.TrendPrice},
+		{"Average Sell", p.AverageSellPrice},
+		{"Low", p.LowPrice},
+		{"30-day Avg", p.Avg30},
+	}
+	var results []scraper.Result
+	for _, e := range candidates {
+		price, ok := pick(e.val)
+		if !ok {
+			continue
+		}
+		title := "Cardmarket"
+		if name != "" {
+			title = name + " — " + e.label
+		}
+		results = append(results, scraper.Result{
+			Title:        title,
+			URL:          cardURL,
+			Price:        price,
+			Currency:     pricing.CurrencyEUR,
+			Kind:         pricing.KindListing,
+			RawCondition: e.label,
+		})
+	}
+	return results
+}
+
 // cardResolver resolve nome e IDs externos de uma carta a partir do ptcgoCode + número.
 type cardResolver interface {
 	FindCard(ctx context.Context, ptcgoCode, number string) (pokemontcgio.CardInfo, error)
@@ -93,27 +137,22 @@ type resolvedCard struct {
 //
 // Parâmetros aceitos:
 //
-//	number  — número da carta no set (ex: "276")
-//	set     — ptcgoCode do set (ex: "ASC")
-//	name    — nome da carta; ignorado quando catalog está disponível
+//	number  — número da carta no set (ex: "276") — obrigatório
+//	set     — ptcgoCode do set (ex: "ASC") — obrigatório
 //	limit   — máximo de resultados por fonte (default 10)
 //
-// Quando catalog está injetado e number+set são fornecidos:
-//   - nome da carta é resolvido automaticamente via pokemontcg.io
-//   - TCGPlayer product ID é resolvido via redirect de prices.pokemontcg.io
+// A carta é resolvida automaticamente via pokemontcg.io (nome, product IDs).
 func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 	number := r.URL.Query().Get("number")
 	setCode := r.URL.Query().Get("set")
-	nameParam := r.URL.Query().Get("name")
 	limit := atoiOrDefault(r.URL.Query().Get("limit"), 10)
 
-	if number == "" && setCode == "" && nameParam == "" {
-		writeBadRequest(w, "informe ao menos number+set ou name")
+	if number == "" || setCode == "" {
+		writeBadRequest(w, "informe number e set")
 		return
 	}
 
 	baseQuery := scraper.Query{
-		Name:    nameParam,
 		Number:  number,
 		SetCode: setCode,
 		Limit:   limit,
@@ -123,10 +162,9 @@ func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 	var resolvedInfo *resolvedCard
 	var catalogInfo *pokemontcgio.CardInfo
 
-	// Resolução via pokemontcg.io — ativa quando catalog está injetado e temos number+set.
-	// Timeout curto para não atrasar o fan-out caso a API demore ou seja rate-limitada.
-	if h.catalog != nil && number != "" && setCode != "" {
-		catalogCtx, catalogCancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// Resolução via pokemontcg.io: nome da carta + product IDs externos.
+	if h.catalog != nil {
+		catalogCtx, catalogCancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer catalogCancel()
 		if info, err := h.catalog.FindCard(catalogCtx, setCode, number); err == nil {
 			baseQuery.Name = info.Name
@@ -180,6 +218,21 @@ func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+		}
+	}
+
+	// Cardmarket: se pokemontcg.io trouxe preços EUR, injeta como fonte sintética.
+	if catalogInfo != nil && catalogInfo.CardmarketPrices != nil {
+		synthetic := cardmarketResultsFromCatalog(
+			catalogInfo.CardmarketPrices,
+			catalogInfo.Name,
+			catalogInfo.CardmarketURL,
+		)
+		if len(synthetic) > 0 {
+			results = append(results, scraper.SourceResult{
+				Source:  pricing.SourceCardmarket,
+				Results: synthetic,
+			})
 		}
 	}
 

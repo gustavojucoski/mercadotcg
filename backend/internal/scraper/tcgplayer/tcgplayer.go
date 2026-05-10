@@ -53,10 +53,23 @@ func (c *Client) Name() pricing.Source { return pricing.SourceTCGPlayer }
 // Search implementa scraper.Source.
 //
 // Requer q.ExternalID com o product ID do TCGplayer (ex: "676088").
-// Sem ExternalID retorna ErrNotConfigured.
+// Sem ExternalID retorna lista vazia — o card não tem product ID disponível via pokemontcg.io.
+// conditionMultipliers são os fatores padrão que o TCGPlayer aplica sobre o
+// preço NM para derivar o valor em cada condição.
+var conditionMultipliers = []struct {
+	condition string
+	factor    float64
+}{
+	{"NM", 1.00},
+	{"LP", 0.80},
+	{"MP", 0.64},
+	{"HP", 0.40},
+	{"DMG", 0.24},
+}
+
 func (c *Client) Search(ctx context.Context, q scraper.Query) ([]scraper.Result, error) {
 	if q.ExternalID == "" {
-		return nil, scraper.ErrNotConfigured
+		return []scraper.Result{}, nil
 	}
 
 	priceURL := fmt.Sprintf("%s/v2/product/%s/pricepoints", c.apiBase, q.ExternalID)
@@ -67,25 +80,29 @@ func (c *Client) Search(ctx context.Context, q scraper.Query) ([]scraper.Result,
 		return nil, fmt.Errorf("tcgplayer: pricepoints: %w", err)
 	}
 
-	results := make([]scraper.Result, 0, len(points))
+	// O marketPrice da pricepoints API representa o preço de mercado NM.
+	// Derivamos LP/MP/HP/DMG aplicando os multiplicadores padrão do TCGPlayer.
+	var results []scraper.Result
 	for _, p := range points {
-		price := pickPrice(p)
-		if price.IsZero() {
+		nmPrice := pickPrice(p)
+		if nmPrice.IsZero() {
 			continue
 		}
-
-		title := buildTitle(q.Name, p.PrintingType)
-		rawCond := p.PrintingType
-
-		results = append(results, scraper.Result{
-			Title:        title,
-			URL:          productURL,
-			Price:        price,
-			Currency:     pricing.CurrencyUSD,
-			Kind:         pricing.KindListing,
-			RawCondition: rawCond,
-			ExternalID:   q.ExternalID,
-		})
+		for _, cond := range conditionMultipliers {
+			factor := decimal.NewFromFloat(cond.factor)
+			price := nmPrice.Mul(factor).Round(2)
+			title := buildTitle(q.Name, p.PrintingType, cond.condition)
+			results = append(results, scraper.Result{
+				Title:        title,
+				URL:          productURL,
+				Price:        price,
+				Currency:     pricing.CurrencyUSD,
+				Kind:         pricing.KindListing,
+				Condition:    cond.condition,
+				RawCondition: cond.condition,
+				ExternalID:   q.ExternalID,
+			})
+		}
 	}
 
 	if len(results) == 0 {
@@ -145,13 +162,16 @@ func pickPrice(p pricepoint) decimal.Decimal {
 	return decimal.Zero
 }
 
-func buildTitle(name, printingType string) string {
+func buildTitle(name, printingType, condition string) string {
 	parts := []string{}
 	if name != "" {
 		parts = append(parts, name)
 	}
 	if printingType != "" && !strings.EqualFold(printingType, "Normal") {
 		parts = append(parts, printingType)
+	}
+	if condition != "" {
+		parts = append(parts, condition)
 	}
 	if len(parts) == 0 {
 		return "TCGplayer"
