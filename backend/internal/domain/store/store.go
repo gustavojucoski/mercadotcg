@@ -13,6 +13,23 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// DocumentType espelha o ENUM document_type do banco.
+type DocumentType string
+
+const (
+	DocumentTypeCPF  DocumentType = "cpf"
+	DocumentTypeCNPJ DocumentType = "cnpj"
+)
+
+// DocumentStatus espelha o ENUM document_status do banco.
+type DocumentStatus string
+
+const (
+	DocumentStatusPending          DocumentStatus = "pending"
+	DocumentStatusAutoVerified     DocumentStatus = "auto_verified"
+	DocumentStatusManuallyVerified DocumentStatus = "manually_verified"
+)
+
 // Store representa um lojista cadastrado na plataforma.
 type Store struct {
 	ID          uuid.UUID `json:"id"`
@@ -22,8 +39,16 @@ type Store struct {
 	Description string    `json:"description,omitempty"`
 	LogoURL     string    `json:"logo_url,omitempty"`
 	IsActive    bool      `json:"is_active"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+
+	DocumentType      *DocumentType  `json:"document_type,omitempty"`
+	DocumentNumber    *string        `json:"document_number,omitempty"`
+	DocumentStatus    DocumentStatus `json:"document_status"`
+	LegalName         *string        `json:"legal_name,omitempty"`
+	DocumentVerifiedAt *time.Time    `json:"document_verified_at,omitempty"`
+	DocumentVerifiedBy *uuid.UUID    `json:"document_verified_by,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // StockItem é a posição corrente de uma combinação (variante, condição,

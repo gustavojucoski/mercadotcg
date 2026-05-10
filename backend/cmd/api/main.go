@@ -17,7 +17,10 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/gustavojucoski/mercadotcg/backend/internal/auth"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/config"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/user"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/email"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/forex"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/handler"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
@@ -58,6 +61,9 @@ func main() {
 	storeRepo := postgres.NewStoreRepo(pool)
 	stockRepo := postgres.NewStockRepo(pool)
 	forexRepo := postgres.NewForexRepo(pool)
+	userRepo := postgres.NewUserRepo(pool)
+	tokenRepo := postgres.NewTokenRepo(pool)
+	storeMemberRepo := postgres.NewStoreMemberRepo(pool)
 
 	// ---- Serviços ---------------------------------------------------------
 	bcb := forex.NewBCBProvider(15 * time.Second)
@@ -66,6 +72,22 @@ func main() {
 	signalSvc := pricesignal.NewService(pool)
 
 	ptcgClient := pokemontcgio.New(10*time.Second, cfg.PokemonTCGAPIKey)
+
+	// ---- Auth ---------------------------------------------------------------
+	tokenSvc := auth.NewTokenService(cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
+	oauthSvc := auth.NewOAuthService(cfg.GoogleClientID, cfg.GoogleClientSecret,
+		cfg.GoogleRedirectURL, cfg.OAuthStateHMACKey)
+
+	var mailer email.Provider
+	if cfg.ResendAPIKey != "" {
+		mailer = email.NewResendProvider(cfg.ResendAPIKey, cfg.EmailFromAddress)
+	} else {
+		mailer = email.NewNoopProvider()
+	}
+
+	authSvc := auth.NewService(userRepo, tokenRepo, tokenSvc, oauthSvc, mailer,
+		auth.ServiceConfig{FrontendBaseURL: cfg.FrontendBaseURL})
+	authMw := auth.NewMiddleware(tokenSvc, storeMemberRepo)
 
 	// ---- HTTP -------------------------------------------------------------
 	r := chi.NewRouter()
@@ -103,11 +125,27 @@ func main() {
 
 	// API v1
 	r.Route("/api/v1", func(r chi.Router) {
+		handler.NewAuthHandler(authSvc, tokenSvc, authMw, userRepo, handler.AuthHandlerConfig{
+			FrontendBaseURL: cfg.FrontendBaseURL,
+		}).Routes(r)
+
+		handler.NewAdminHandler(userRepo, storeRepo, storeMemberRepo, authMw).Routes(r)
+
 		handler.NewCardHandler(cardRepo, signalSvc).Routes(r)
-		handler.NewStoreHandler(storeRepo, stockRepo, signalSvc).Routes(r)
+
+		// Rotas de loja: leitura pública, escrita requer membro com stock_manager+.
+		storeH := handler.NewStoreHandler(storeRepo, stockRepo, signalSvc)
+		storeH.Routes(r)
+		r.With(authMw.RequireStoreRole(user.StoreRoleStockManager)).
+			Post("/stores/{id}/stock/purchase", storeH.RegisterPurchase)
+		r.With(authMw.RequireStoreRole(user.StoreRoleStockManager)).
+			Post("/stores/{id}/stock-items/{itemID}/sale", storeH.RegisterSale)
+
 		handler.NewVariantHandler(signalSvc).Routes(r)
 
-		handler.NewExternalHandler(scrapers...).WithCatalog(ptcgClient).Routes(r)
+		// External search restrito a platform_admin.
+		extH := handler.NewExternalHandler(scrapers...).WithCatalog(ptcgClient)
+		r.With(authMw.RequirePlatformAdmin).Get("/external-search", extH.Search)
 	})
 
 	// Imprime as rotas no boot — útil pra você descobrir o que tem.

@@ -4,7 +4,7 @@
 # Build context é a pasta backend/ (mesma do docker-compose.yml).
 
 # --- Stage 1 — builder ------------------------------------------------------
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # git é necessário para `go mod tidy` resolver alguns módulos via VCS.
 RUN apk add --no-cache git

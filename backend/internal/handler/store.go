@@ -30,63 +30,19 @@ func NewStoreHandler(
 	return &StoreHandler{stores: stores, stock: stock, signal: signal}
 }
 
-// Routes monta as rotas no router chi recebido.
+// Routes monta as rotas no router chi recebido (leitura pública).
+// POST /stores foi migrado para AdminHandler.
+// As rotas de escrita (purchase/sale) são registradas em main.go com middleware de auth.
 func (h *StoreHandler) Routes(r chi.Router) {
-	r.Post("/stores", h.create)
-	r.Get("/stores/{id}", h.getByID)
-	r.Get("/stores/{id}/stock", h.listStock)
-	r.Post("/stores/{id}/stock/purchase", h.registerPurchase)
-	r.Post("/stock-items/{id}/sale", h.registerSale)
-}
-
-// ----------------------------------------------------------------------------
-// POST /stores
-// ----------------------------------------------------------------------------
-
-type createStoreReq struct {
-	OwnerID     string `json:"owner_id"`
-	Name        string `json:"name"`
-	Slug        string `json:"slug"`
-	Description string `json:"description,omitempty"`
-	LogoURL     string `json:"logo_url,omitempty"`
-}
-
-func (h *StoreHandler) create(w http.ResponseWriter, r *http.Request) {
-	var req createStoreReq
-	if err := decodeJSON(r, &req); err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	if req.Name == "" || req.Slug == "" || req.OwnerID == "" {
-		writeBadRequest(w, "owner_id, name e slug são obrigatórios")
-		return
-	}
-	ownerID, err := parseUUID(req.OwnerID)
-	if err != nil {
-		writeBadRequest(w, "owner_id inválido")
-		return
-	}
-
-	s := &store.Store{
-		OwnerID:     ownerID,
-		Name:        req.Name,
-		Slug:        req.Slug,
-		Description: req.Description,
-		LogoURL:     req.LogoURL,
-		IsActive:    true,
-	}
-	if err := h.stores.Create(r.Context(), s); err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, s)
+	r.Get("/stores/{id}", h.GetByID)
+	r.Get("/stores/{id}/stock", h.ListStock)
 }
 
 // ----------------------------------------------------------------------------
 // GET /stores/{id}
 // ----------------------------------------------------------------------------
 
-func (h *StoreHandler) getByID(w http.ResponseWriter, r *http.Request) {
+func (h *StoreHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		writeBadRequest(w, "id inválido")
@@ -113,7 +69,7 @@ type stockListItem struct {
 	Signal *pricesignal.Signal `json:"signal,omitempty"`
 }
 
-func (h *StoreHandler) listStock(w http.ResponseWriter, r *http.Request) {
+func (h *StoreHandler) ListStock(w http.ResponseWriter, r *http.Request) {
 	storeID, err := parseUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		writeBadRequest(w, "id inválido")
@@ -161,7 +117,7 @@ type purchaseReq struct {
 	Notes       string `json:"notes,omitempty"`
 }
 
-func (h *StoreHandler) registerPurchase(w http.ResponseWriter, r *http.Request) {
+func (h *StoreHandler) RegisterPurchase(w http.ResponseWriter, r *http.Request) {
 	storeID, err := parseUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		writeBadRequest(w, "id da loja inválido")
@@ -223,8 +179,8 @@ type saleReq struct {
 	Notes        string `json:"notes,omitempty"`
 }
 
-func (h *StoreHandler) registerSale(w http.ResponseWriter, r *http.Request) {
-	itemID, err := parseUUID(chi.URLParam(r, "id"))
+func (h *StoreHandler) RegisterSale(w http.ResponseWriter, r *http.Request) {
+	itemID, err := parseUUID(chi.URLParam(r, "itemID"))
 	if err != nil {
 		writeBadRequest(w, "id do stock_item inválido")
 		return

@@ -20,8 +20,6 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-
-	"github.com/gustavojucoski/mercadotcg/backend/internal/config"
 )
 
 func main() {
@@ -30,9 +28,9 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "DATABASE_URL é obrigatório")
 		os.Exit(1)
 	}
 
@@ -41,7 +39,7 @@ func main() {
 		path = "./migrations"
 	}
 
-	m, err := migrate.New("file://"+path, cfg.DatabaseURL)
+	m, err := migrate.New("file://"+path, databaseURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "migrate init: %v\n", err)
 		os.Exit(1)

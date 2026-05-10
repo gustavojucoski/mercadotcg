@@ -17,8 +17,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"github.com/gustavojucoski/mercadotcg/backend/internal/config"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/card"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/user"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/matching"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/pricing"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/store"
@@ -32,17 +32,20 @@ func deterministicUUID(label string) uuid.UUID {
 }
 
 func main() {
-	cfg, err := config.Load()
-	must(err, "config")
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		exit("DATABASE_URL é obrigatório")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	pool, err := postgres.Connect(ctx, cfg.DatabaseURL)
+	pool, err := postgres.Connect(ctx, databaseURL)
 	must(err, "connect postgres")
 	defer pool.Close()
 
 	cardRepo := postgres.NewCardRepo(pool)
+	userRepo := postgres.NewUserRepo(pool)
 	storeRepo := postgres.NewStoreRepo(pool)
 	stockRepo := postgres.NewStockRepo(pool)
 	dailyRepo := postgres.NewPriceDailyRepo(pool)
@@ -157,7 +160,20 @@ func main() {
 	// freshSeed = true significa que esta é a primeira execução do seed
 	// (a loja não existia). Idempotência: nas execuções seguintes, pulamos
 	// o loop de RegisterPurchase para não inflar o estoque.
-	ownerID := deterministicUUID("owner:gustavo")
+
+	// Busca o admin pelo email para respeitar a FK fk_stores_owner.
+	adminEmail := os.Getenv("SEED_ADMIN_EMAIL")
+	if adminEmail == "" {
+		adminEmail = "gustavojucoski@gmail.com"
+	}
+	adminUser, err := userRepo.GetByEmail(ctx, adminEmail)
+	if err != nil {
+		exit("buscar admin '%s': %v (rode as migrations 000007 antes do seed)", adminEmail, err)
+	}
+	if adminUser.PlatformRole != user.RolePlatformAdmin {
+		exit("usuário '%s' não é platform_admin", adminEmail)
+	}
+	ownerID := adminUser.ID
 	mySlug := "mercado-do-gus"
 	myStore, err := storeRepo.GetBySlug(ctx, mySlug)
 	freshSeed := false

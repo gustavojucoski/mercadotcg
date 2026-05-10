@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -24,16 +25,27 @@ func NewStoreRepo(pool *pgxpool.Pool) *StoreRepo {
 }
 
 const insertStoreSQL = `
-INSERT INTO stores (owner_id, name, slug, description, logo_url, is_active)
-VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)
-RETURNING id, created_at, updated_at`
+INSERT INTO stores (
+    owner_id, name, slug, description, logo_url, is_active,
+    document_type, document_number, document_status, legal_name
+)
+VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6,
+        $7::document_type, $8, COALESCE($9::document_status, 'pending'::document_status), $10)
+RETURNING id, document_status, created_at, updated_at`
 
 // Create insere uma loja e devolve o ID gerado.
 // slug é único globalmente — colisão vira ErrAlreadyExists.
 func (r *StoreRepo) Create(ctx context.Context, s *store.Store) error {
+	var docStatus string
+	var docStatusArg *string
+	if s.DocumentStatus != "" {
+		v := string(s.DocumentStatus)
+		docStatusArg = &v
+	}
 	err := r.pool.QueryRow(ctx, insertStoreSQL,
 		s.OwnerID, s.Name, s.Slug, s.Description, s.LogoURL, s.IsActive,
-	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
+		(*string)(s.DocumentType), s.DocumentNumber, docStatusArg, s.LegalName,
+	).Scan(&s.ID, &docStatus, &s.CreatedAt, &s.UpdatedAt)
 
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -42,35 +54,98 @@ func (r *StoreRepo) Create(ctx context.Context, s *store.Store) error {
 		}
 		return fmt.Errorf("insert store: %w", err)
 	}
+	s.DocumentStatus = store.DocumentStatus(docStatus)
 	return nil
 }
 
-const selectStoreByIDSQL = `
-SELECT id, owner_id, name, slug, COALESCE(description, ''), COALESCE(logo_url, ''),
-       is_active, created_at, updated_at
-FROM stores WHERE id = $1`
+// selectStoreCols is the common column list for store queries.
+const selectStoreCols = `
+    id, owner_id, name, slug,
+    COALESCE(description, ''), COALESCE(logo_url, ''), is_active,
+    document_type, document_number, document_status, legal_name,
+    document_verified_at, document_verified_by,
+    created_at, updated_at`
+
+const selectStoreByIDSQL = `SELECT` + selectStoreCols + ` FROM stores WHERE id = $1`
 
 // GetByID busca uma loja pelo UUID.
 func (r *StoreRepo) GetByID(ctx context.Context, id uuid.UUID) (store.Store, error) {
 	return r.scanOne(ctx, selectStoreByIDSQL, id)
 }
 
-const selectStoreBySlugSQL = `
-SELECT id, owner_id, name, slug, COALESCE(description, ''), COALESCE(logo_url, ''),
-       is_active, created_at, updated_at
-FROM stores WHERE slug = $1`
+const selectStoreBySlugSQL = `SELECT` + selectStoreCols + ` FROM stores WHERE slug = $1`
 
 // GetBySlug busca uma loja pelo slug público.
 func (r *StoreRepo) GetBySlug(ctx context.Context, slug string) (store.Store, error) {
 	return r.scanOne(ctx, selectStoreBySlugSQL, slug)
 }
 
+const listAllStoresSQL = `SELECT` + selectStoreCols + `
+FROM stores ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+
+// List devolve todas as lojas paginadas (para o admin).
+func (r *StoreRepo) List(ctx context.Context, limit, offset int) ([]store.Store, error) {
+	rows, err := r.pool.Query(ctx, listAllStoresSQL, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list stores: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.Store
+	for rows.Next() {
+		s, err := scanStoreRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+const updateStoreSQL = `
+UPDATE stores SET
+    name = $2,
+    slug = $3,
+    description = NULLIF($4, ''),
+    logo_url = NULLIF($5, ''),
+    is_active = $6,
+    legal_name = $7,
+    document_type = $8::document_type,
+    document_number = $9,
+    document_status = $10::document_status,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING updated_at`
+
+// Update persiste alterações básicas de uma loja (sem tocar em verified_at/by).
+func (r *StoreRepo) Update(ctx context.Context, s *store.Store) error {
+	return r.pool.QueryRow(ctx, updateStoreSQL,
+		s.ID, s.Name, s.Slug, s.Description, s.LogoURL, s.IsActive,
+		s.LegalName, (*string)(s.DocumentType), s.DocumentNumber,
+		string(s.DocumentStatus),
+	).Scan(&s.UpdatedAt)
+}
+
+const setDocumentVerifiedSQL = `
+UPDATE stores SET
+    document_status = $2::document_status,
+    document_verified_at = NOW(),
+    document_verified_by = $3,
+    updated_at = NOW()
+WHERE id = $1`
+
+// SetDocumentVerified marks a store's document as verified.
+func (r *StoreRepo) SetDocumentVerified(ctx context.Context, storeID, verifiedByID uuid.UUID, status store.DocumentStatus) error {
+	_, err := r.pool.Exec(ctx, setDocumentVerifiedSQL, storeID, string(status), verifiedByID)
+	if err != nil {
+		return fmt.Errorf("set document verified: %w", err)
+	}
+	return nil
+}
+
 func (r *StoreRepo) scanOne(ctx context.Context, sql string, arg any) (store.Store, error) {
-	var s store.Store
-	err := r.pool.QueryRow(ctx, sql, arg).Scan(
-		&s.ID, &s.OwnerID, &s.Name, &s.Slug, &s.Description, &s.LogoURL,
-		&s.IsActive, &s.CreatedAt, &s.UpdatedAt,
-	)
+	row := r.pool.QueryRow(ctx, sql, arg)
+	s, err := scanStoreRow(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Store{}, ErrNotFound
 	}
@@ -80,12 +155,38 @@ func (r *StoreRepo) scanOne(ctx context.Context, sql string, arg any) (store.Sto
 	return s, nil
 }
 
-const listStoresByOwnerSQL = `
-SELECT id, owner_id, name, slug, COALESCE(description, ''), COALESCE(logo_url, ''),
-       is_active, created_at, updated_at
-FROM stores
-WHERE owner_id = $1
-ORDER BY created_at ASC`
+// scanStoreRow scans a row into a Store. Works for both QueryRow and Rows.
+func scanStoreRow(row interface {
+	Scan(...any) error
+}) (store.Store, error) {
+	var s store.Store
+	var docType *string
+	var docStatus string
+	var docVerifiedAt *time.Time
+	var docVerifiedBy *uuid.UUID
+
+	err := row.Scan(
+		&s.ID, &s.OwnerID, &s.Name, &s.Slug,
+		&s.Description, &s.LogoURL, &s.IsActive,
+		&docType, &s.DocumentNumber, &docStatus, &s.LegalName,
+		&docVerifiedAt, &docVerifiedBy,
+		&s.CreatedAt, &s.UpdatedAt,
+	)
+	if err != nil {
+		return store.Store{}, err
+	}
+	if docType != nil {
+		dt := store.DocumentType(*docType)
+		s.DocumentType = &dt
+	}
+	s.DocumentStatus = store.DocumentStatus(docStatus)
+	s.DocumentVerifiedAt = docVerifiedAt
+	s.DocumentVerifiedBy = docVerifiedBy
+	return s, nil
+}
+
+const listStoresByOwnerSQL = `SELECT` + selectStoreCols + `
+FROM stores WHERE owner_id = $1 ORDER BY created_at ASC`
 
 // ListByOwner devolve todas as lojas de um dono.
 func (r *StoreRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]store.Store, error) {
@@ -97,14 +198,20 @@ func (r *StoreRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]store
 
 	var out []store.Store
 	for rows.Next() {
-		var s store.Store
-		if err := rows.Scan(
-			&s.ID, &s.OwnerID, &s.Name, &s.Slug, &s.Description, &s.LogoURL,
-			&s.IsActive, &s.CreatedAt, &s.UpdatedAt,
-		); err != nil {
+		s, err := scanStoreRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan store: %w", err)
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// statusPtr converts a DocumentStatus to a *string for nullable DB writes.
+func statusPtr(s store.DocumentStatus) *string {
+	if s == "" {
+		return nil
+	}
+	v := string(s)
+	return &v
 }

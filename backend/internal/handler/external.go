@@ -132,8 +132,14 @@ func (h *ExternalHandler) WithSourceTimeout(src pricing.Source, d time.Duration)
 }
 
 // Routes monta a rota.
+// A proteção (RequirePlatformAdmin) é aplicada em main.go ao registrar a rota.
 func (h *ExternalHandler) Routes(r chi.Router) {
-	r.Get("/external-search", h.search)
+	r.Get("/external-search", h.Search)
+}
+
+// Search é o handler público exposto para permitir middleware em main.go.
+func (h *ExternalHandler) Search(w http.ResponseWriter, r *http.Request) {
+	h.search(w, r)
 }
 
 // externalSearchResponse é o JSON devolvido por /external-search.
