@@ -2,7 +2,7 @@
 
 > Documento vivo. Atualizar a cada decisão arquitetural relevante e ao final de cada fase de trabalho.
 
-## 0. Agentes Especializados
+## 0. Agentes Especializados e Workflow de Desenvolvimento
 
 Este projeto possui agentes especializados. **Sempre delegue a tarefa ao agente correto antes de escrever qualquer código.** Use o agente via ferramenta `Agent` com o `subagent_type` correspondente.
 
@@ -10,24 +10,40 @@ Este projeto possui agentes especializados. **Sempre delegue a tarefa ao agente 
 |---|---|---|
 | Go Backend Engineer | `go-backend-engineer` | Qualquer código Go: handlers, repositórios, serviços, scrapers, migrations, testes de integração Go |
 | Next.js Frontend Engineer | `nextjs-frontend-engineer` | Qualquer código frontend: pages, components, lib/, hooks, estilos Tailwind, otimizações de performance |
-| Senior Software Architect | `senior-software-architect` | Decisões arquiteturais, novos ADRs, avaliação de tecnologias, design de módulos novos |
+| Senior Software Architect | `senior-software-architect` | Decisões arquiteturais, novos ADRs, avaliação de tecnologias, design de módulos novos, **qualquer pesquisa técnica** |
 | Product Manager | `product-manager` | Priorização de backlog, definição de MVP, análise de ROI de features, especificação de requisitos |
 | QA / SDET Engineer | `qa-sdet-engineer` | Testes integrados com testcontainers, E2E com Playwright, revisão de cobertura, CI/CD |
 
-**Regras de uso:**
-- Tarefas puramente de **leitura/análise** (explicar código, responder perguntas) podem ser feitas inline.
-- Tarefas que **escrevem ou modificam código** devem sempre passar pelo agente especializado.
-- Para mudanças que tocam **ambas as camadas** (ex.: novo endpoint + tela nova), spawne os dois agentes em paralelo com contexto suficiente para cada um.
-- Se o agente precisar de contexto de uma sessão anterior, inclua no prompt as informações relevantes (tipos, interfaces, convenções).
+---
 
-**Workflow obrigatório pós-entrega — QA automático:**
-Após qualquer entrega de código novo ou funcionalidade (quando um ou mais agentes especializados finalizarem a implementação), o Claude principal **deve obrigatoriamente** spawnar o `qa-sdet-engineer` para revisar o que foi criado e propor/escrever testes. Não pular esta etapa mesmo que o usuário não solicite explicitamente. O prompt para o QA deve incluir: o que foi criado, quais arquivos foram modificados, as interfaces e contratos relevantes, e o pedido de suíte de testes cobrindo happy path, edge cases e regressões.
+### Workflow obrigatório para qualquer alteração de código
 
-**Workflow obrigatório de revisão — PM → Arquiteto:**
-Quando o usuário pedir explicitamente para "revisar", "analisar", "avaliar" uma feature, decisão ou conjunto de mudanças, o Claude principal **deve obrigatoriamente** executar a seguinte sequência em dois passos:
-1. Spawnar `product-manager` com o contexto completo do que está sendo revisado. Aguardar o retorno com análise de ROI, riscos de produto, gaps de UX e priorização.
-2. Com o output do PM em mãos, spawnar `senior-software-architect` passando tanto o contexto original quanto o resultado da análise do PM. O arquiteto deve sugerir ajustes arquiteturais, novos ADRs se necessário, e validar ou questionar as decisões de design à luz dos trade-offs de produto levantados pelo PM.
-Apresentar ao usuário os dois outputs de forma consolidada.
+```
+1. PM          → define requisitos, escopo, critérios de aceite
+2. Arquiteto   → design da solução, ADRs se necessário, plano para os agentes de código
+3. Branch      → criar branch com nome descritivo (feat/, fix/, refactor/)
+4. Código      → agentes de backend e/ou frontend implementam na branch, fazendo commits incrementais
+5. QA          → qa-sdet-engineer revisa o que foi implementado e escreve/propõe testes
+6. PR          → abrir Pull Request da branch para main
+7. Revisão     → Claude principal revisa a PR antes de aprovar
+8. Merge       → squash merge para main após aprovação
+```
+
+**Regras absolutas:**
+- **Nenhuma linha de código é escrita sem passar por PM → Arquiteto antes.** Não há exceções, nem para correções pequenas.
+- **Todo código vai para uma branch.** Nunca commitar diretamente em `main`.
+- **Toda pesquisa técnica** (bibliotecas, APIs externas, padrões, viabilidade) é feita pelo `senior-software-architect`.
+- **QA é obrigatório** após cada entrega dos agentes de código. O Claude principal spawna o QA automaticamente, sem precisar o usuário solicitar.
+- Tarefas puramente de **leitura/análise** (explicar código, responder perguntas) podem ser feitas inline pelo Claude principal.
+- Para mudanças que tocam **ambas as camadas** (backend + frontend), spawne os agentes de código em paralelo após o Arquiteto definir o plano.
+- Se um agente precisar de contexto de sessão anterior, inclua no prompt os tipos, interfaces e convenções relevantes.
+
+### Workflow de revisão de feature ou decisão (quando solicitado)
+
+Quando o usuário pedir para "revisar", "analisar" ou "avaliar" algo:
+1. Spawnar `product-manager` — análise de ROI, riscos de produto, gaps de UX.
+2. Com o output do PM, spawnar `senior-software-architect` — ajustes arquiteturais, validação das decisões de design.
+3. Apresentar os dois outputs consolidados ao usuário.
 
 ## 1. Visão
 
