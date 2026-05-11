@@ -425,7 +425,19 @@ func downloadOne(
 		return "", fmt.Errorf("download %s: status %d", srcURL, resp.StatusCode)
 	}
 
-	publicURL, err := provider.Put(ctx, key, io.Reader(resp.Body))
+	// Derive content type from extension; LocalProvider ignores it but
+	// the interface requires it for S3 compatibility.
+	extMIME := map[string]string{
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".png":  "image/png",
+		".webp": "image/webp",
+	}
+	ct := extMIME[ext]
+	if ct == "" {
+		ct = "image/png"
+	}
+	publicURL, err := provider.Put(ctx, key, io.Reader(resp.Body), ct)
 	if err != nil {
 		return "", fmt.Errorf("put %s: %w", key, err)
 	}
