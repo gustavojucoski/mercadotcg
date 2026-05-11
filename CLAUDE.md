@@ -83,10 +83,10 @@ MercadoTCG/
 │   │   ├── api/            # servidor HTTP principal
 │   │   ├── migrate/        # CLI: up | down [N] | version | force <v>  — lê DATABASE_URL direto
 │   │   ├── seed/           # popula demo data — lê DATABASE_URL direto (sem config.Load)
-│   │   └── import-catalog/ # importa catálogo da pokemontcg.io API; lê DATABASE_URL direto (sem config.Load); variant_rules.json define finishes por era/rarity; flag --download-images
+│   │   └── import-catalog/ # importa catálogo da pokemontcg.io API; lê DATABASE_URL direto (sem config.Load); variant_rules.json define finishes por era/rarity; flag --download-images; faz upsert de card_series antes de cada set; popula collector_number via buildCollectorNumber
 │   ├── internal/
 │   │   ├── domain/
-│   │   │   ├── card/       # Set, Card, Variant, Finish enum
+│   │   │   ├── card/       # Series, Set (name_pt, series_pt, series_id), Card (collector_number, name_pt), Variant, Finish enum
 │   │   │   ├── pricing/    # Observation, DailyPoint, Condition, Source enums
 │   │   │   ├── store/      # Store (+DocumentType/Status), StockItem, StockMovement
 │   │   │   ├── user/       # User, PlatformRole, StoreRole, StoreRoleLevel()
@@ -114,7 +114,7 @@ MercadoTCG/
 │   │   │   └── helpers.go    # writeJSON, writeErr, decodeJSON, parseUUID, atoiOrDefault
 │   │   ├── repository/postgres/
 │   │   │   ├── db.go               # Connect, sentinelas ErrNotFound/ErrAlreadyExists
-│   │   │   ├── card_repo.go
+│   │   │   ├── card_repo.go        # + UpsertSeries, ListSeries, UpdateSeriesNamePT, UpdateSetNamePT, UpdateCardNamePT
 │   │   │   ├── price_history_repo.go
 │   │   │   ├── price_daily_repo.go
 │   │   │   ├── forex_repo.go
@@ -270,6 +270,12 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 **Dev:** O `verify_url` é sempre logado no stdout da API (`[dev] link de verificação`) para facilitar testes sem depender de entrega de email.
 **Email prod:** Requer domínio verificado no Resend. Sem domínio verificado, `onboarding@resend.dev` só entrega para o email do dono da conta Resend.
 
+### ADR-022 — Séries de sets como entidade própria (`card_series`)
+**Decisão:** Criar tabela `card_series` com `name` (EN), `name_pt` e `tcg`; `card_sets.series_id UUID FK` aponta para ela.
+**Razão:** `series` agrupa sets e tem identidade própria (nome bilíngue, pertence a um TCG). Desnormalizar como `series_pt TEXT` em `card_sets` criaria risco real de inconsistência em atualizações manuais set-a-set e quebraria agrupamentos no frontend.
+**Trade-offs aceitos:** Migration de dados necessária (INSERT das séries distintas + UPDATE dos sets). JOIN adicional nas queries de sets — desprezível com ~170 linhas. Coluna `card_sets.series TEXT` mantida para migração gradual; será removida na migration 000014 após confirmar integridade.
+**Alternativas rejeitadas:** `series_pt TEXT` em `card_sets` — inconsistência garantida em preenchimento manual; FK para `card_series.name` — instável se nome EN for corrigido na fonte.
+
 ### ADR-021 — `tcg` como VARCHAR(32) com CHECK constraint em `card_sets`
 **Decisão:** A coluna `tcg` em `card_sets` é `VARCHAR(32) NOT NULL DEFAULT 'pokemon'` com CHECK constraint explícita (`'pokemon', 'magic', 'yugioh', 'onepiece', 'lorcana', 'fab'`) em vez de ENUM nativo do Postgres.
 **Razão:** O roadmap multi-TCG prevê adição orgânica de novos jogos. ENUM nativo exige `ALTER TYPE` com possível lock de tabela em tabela populada; `DROP/ADD CONSTRAINT` é mais simples. pgx/v5 não exige cast explícito para VARCHAR, eliminando o gotcha de ADR-018.
@@ -285,9 +291,9 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 
 ## 5. Status Atual
 
-**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação de Pokémon TCG.
+**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação de Pokémon TCG + campos PT-BR (series, set, card) + collector_number.
 
-### Migrations (000001–000012)
+### Migrations (000001–000013)
 
 | # | Conteúdo |
 |---|---|
@@ -302,6 +308,7 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 | 000009 | `stores` + colunas de endereço (address_zip … address_country) separadas em migration dedicada |
 | 000010 | `store_audit_log` — id, store_id, changed_by, change_type, changes (JSONB), created_at; índice em (store_id, created_at DESC) |
 | 000012 | `card_sets` + coluna `tcg VARCHAR(32) NOT NULL DEFAULT 'pokemon'` + CHECK constraint + índice (ADR-021) |
+| 000013 | `card_series` (séries como entidade própria: `name`, `name_pt`, `tcg`; UNIQUE `name+tcg`); FK `series_id` em `card_sets` com backfill automático; `name_pt TEXT` em `card_sets`; `collector_number TEXT NOT NULL DEFAULT ''` e `name_pt TEXT` em `cards`; índices hash em `collector_number` e btree em `series_id` (ADR-022) |
 
 ### Endpoints HTTP disponíveis
 
@@ -326,6 +333,12 @@ GET  /api/v1/cards/lookup
 
 # Busca externa (RequirePlatformAdmin)
 GET  /api/v1/external-search?number=&set=
+
+# Admin — catálogo PT-BR (RequirePlatformAdmin)
+GET    /api/v1/admin/series                       # lista séries (opcional ?tcg=pokemon)
+PATCH  /api/v1/admin/series/{id}/name-pt          # tradução PT-BR da série
+PATCH  /api/v1/admin/sets/{id}/name-pt            # tradução PT-BR do set
+PATCH  /api/v1/admin/cards/{id}/name-pt           # tradução PT-BR da carta
 
 # Admin — usuários (RequirePlatformAdmin)
 GET    /api/v1/admin/users
@@ -368,10 +381,7 @@ GET  /api/v1/variants/{id}/signal
 
 ### Dados de demonstração (cmd/seed)
 
-- Set SV8 (Surging Sparks), 3 cartas, 7 variantes
-- Loja "Mercado do Gus" (owner: gustavojucoski@gmail.com)
-- 1890 linhas em `price_daily` (3 condições × 3 fontes × 30 dias × 7 variantes)
-- Forex: 1 USD = R$ 5,40
+`cmd/seed` é um stub — não popula dados. O admin é criado pela migration 000007. O catálogo é importado via `cmd/import-catalog`.
 
 ### Frontend (rotas)
 
@@ -396,14 +406,32 @@ GET  /api/v1/variants/{id}/signal
 
 ## 6. Próximos Passos (priorizados)
 
-1. **Rodar importação completa do catálogo** — `DATABASE_URL=... go run ./cmd/import-catalog` (ou com `POKEMON_TCG_API_KEY` para 20k req/dia). Popula `card_sets`, `cards` e `card_variants` com dados reais de todos os sets de Pokémon TCG.
-2. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso o `pricesignal` fica com dados do seed e nunca atualiza com preços reais dos scrapers.
-3. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`. Hoje os refs são inseridos manualmente pelo seed.
-4. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
-5. **Frontend estoque de singles** — `/lojas/[id]/singles` com cadastro de cards. O catálogo agora está populado via `import-catalog`; usar `GET /api/v1/cards/search` para seleção de carta. Suporte multi-TCG desde o início: campo `tcg` + set + número.
-6. **Frontend estoque de selados** — `/lojas/[id]/selados` com cadastro de produtos selados (booster box, ETB, etc.).
-7. **Testes integrados** — `tests/integration` com `testcontainers-go` para repos críticos: `StockRepo` (transações, custo médio ponderado), `PriceDailyRepo.RebuildDay`, `forex.Service` com fake Provider.
-8. **Marketplace público** — listings, reservas e checkout. Entra integração de pagamentos (seção 9).
+1. **Limpar banco local** — executar DELETE nas tabelas com dados de demo do antigo seed (ver SQL abaixo). Depois aplicar migration 000013: `go run ./cmd/migrate up`.
+2. **Rodar importação completa do catálogo** — `DATABASE_URL=... go run ./cmd/import-catalog` (ou com `POKEMON_TCG_API_KEY` para 20k req/dia). Popula `card_series`, `card_sets`, `cards` e `card_variants` com dados reais de todos os sets de Pokémon TCG. `collector_number` é preenchido automaticamente.
+3. **Preencher traduções PT-BR** — após a importação, usar `PATCH /api/v1/admin/series/{id}/name-pt` e `PATCH /api/v1/admin/sets/{id}/name-pt` para as séries/sets mais usados.
+4. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso o `pricesignal` nunca atualiza com preços reais dos scrapers.
+5. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`.
+6. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
+7. **Frontend estoque de singles** — `/lojas/[id]/singles` com cadastro de cards. Usar `GET /api/v1/cards/search` para seleção; exibir `name_pt` e `series_pt` quando disponíveis, fallback para inglês.
+8. **Frontend estoque de selados** — `/lojas/[id]/selados` com cadastro de produtos selados (booster box, ETB, etc.).
+9. **Testes integrados** — `tests/integration` com `testcontainers-go` para repos críticos: `StockRepo` (transações, custo médio ponderado), `PriceDailyRepo.RebuildDay`, `forex.Service` com fake Provider.
+10. **Marketplace público** — listings, reservas e checkout. Entra integração de pagamentos (seção 9).
+
+### SQL de limpeza do banco local (dados do antigo seed)
+
+```sql
+-- Rodar antes de aplicar migration 000013
+TRUNCATE price_daily, price_history CASCADE;
+DELETE FROM external_card_refs;
+DELETE FROM stock_movements;
+DELETE FROM stock_items;
+DELETE FROM store_members;
+DELETE FROM stores WHERE slug = 'mercado-do-gus';
+DELETE FROM card_variants;
+DELETE FROM cards;
+DELETE FROM card_sets WHERE code = 'sv8';
+DELETE FROM forex_rates WHERE source = 'seed';
+```
 
 ## 7. Convenções
 
