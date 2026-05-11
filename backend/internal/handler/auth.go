@@ -47,9 +47,7 @@ func (h *AuthHandler) Routes(r chi.Router) {
 // ----------------------------------------------------------------------------
 
 type registerReq struct {
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	DisplayName string `json:"display_name"`
+	Email string `json:"email"`
 }
 
 func (h *AuthHandler) register(w http.ResponseWriter, r *http.Request) {
@@ -58,19 +56,26 @@ func (h *AuthHandler) register(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	if req.Email == "" || req.Password == "" || req.DisplayName == "" {
-		writeBadRequest(w, "email, password e display_name são obrigatórios")
-		return
-	}
-	if len(req.Password) < 8 {
-		writeBadRequest(w, "senha deve ter pelo menos 8 caracteres")
+	if req.Email == "" {
+		writeBadRequest(w, "email é obrigatório")
 		return
 	}
 
-	u, err := h.svc.RegisterWithEmail(r.Context(), req.Email, req.Password, req.DisplayName)
+	u, err := h.svc.RegisterWithEmail(r.Context(), req.Email)
 	if err != nil {
 		if errors.Is(err, postgres.ErrAlreadyExists) {
-			writeJSON(w, http.StatusConflict, errorBody{Error: "email já cadastrado"})
+			// Conta já existe — reenviar link se ainda não verificada, rejeitar se já ativa.
+			if resendErr := h.svc.ResendVerificationEmail(r.Context(), req.Email); resendErr != nil {
+				if errors.Is(resendErr, auth.ErrEmailAlreadyVerified) {
+					writeJSON(w, http.StatusConflict, errorBody{Error: "email já cadastrado"})
+					return
+				}
+				writeErr(w, resendErr)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"message": "verifique seu email para ativar a conta",
+			})
 			return
 		}
 		writeErr(w, err)
@@ -178,7 +183,9 @@ func (h *AuthHandler) googleCallback(w http.ResponseWriter, r *http.Request) {
 // ----------------------------------------------------------------------------
 
 type verifyEmailReq struct {
-	Token string `json:"token"`
+	Token       string `json:"token"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name"`
 }
 
 func (h *AuthHandler) verifyEmail(w http.ResponseWriter, r *http.Request) {
@@ -187,15 +194,25 @@ func (h *AuthHandler) verifyEmail(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	if req.Token == "" {
-		writeBadRequest(w, "token é obrigatório")
+	if req.Token == "" || req.Password == "" || req.DisplayName == "" {
+		writeBadRequest(w, "token, password e display_name são obrigatórios")
 		return
 	}
-	if err := h.svc.VerifyEmail(r.Context(), req.Token); err != nil {
+	if len(req.Password) < 8 {
+		writeBadRequest(w, "senha deve ter pelo menos 8 caracteres")
+		return
+	}
+	access, refresh, u, err := h.svc.VerifyEmail(r.Context(), req.Token, req.Password, req.DisplayName)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "token inválido ou expirado"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "email verificado com sucesso"})
+	writeJSON(w, http.StatusOK, tokenResp{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		ExpiresIn:    int(h.tokenSvc.AccessTTL().Seconds()),
+		User:         *u,
+	})
 }
 
 // ----------------------------------------------------------------------------

@@ -21,6 +21,10 @@ import (
 // uma falha — handlers tratam como "fonte indisponível" e seguem o fan-out.
 var ErrNotConfigured = errors.New("scraper: source não configurada")
 
+// ErrAllSourcesFailed é retornado pelo Registry quando todas as implementações
+// registradas para um logical source falharam (circuito aberto ou erro real).
+var ErrAllSourcesFailed = errors.New("scraper: todas as fontes falharam para este source")
+
 // Query é o critério de busca. Pelo menos um campo precisa estar preenchido;
 // cada fonte decide quais usa (Liga combina nome+número; eBay só nome).
 type Query struct {

@@ -22,6 +22,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   const loadUser = async () => {
+    setLoading(true)
     if (getRefreshToken()) {
       const u = await fetchCurrentUser()
       setUser(u)

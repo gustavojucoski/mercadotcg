@@ -40,12 +40,23 @@ type Store struct {
 	LogoURL     string    `json:"logo_url,omitempty"`
 	IsActive    bool      `json:"is_active"`
 
-	DocumentType      *DocumentType  `json:"document_type,omitempty"`
-	DocumentNumber    *string        `json:"document_number,omitempty"`
-	DocumentStatus    DocumentStatus `json:"document_status"`
-	LegalName         *string        `json:"legal_name,omitempty"`
-	DocumentVerifiedAt *time.Time    `json:"document_verified_at,omitempty"`
-	DocumentVerifiedBy *uuid.UUID    `json:"document_verified_by,omitempty"`
+	DocumentType       *DocumentType  `json:"document_type,omitempty"`
+	DocumentNumber     *string        `json:"document_number,omitempty"`
+	DocumentStatus     DocumentStatus `json:"document_status"`
+	LegalName          *string        `json:"legal_name,omitempty"`
+	DocumentVerifiedAt *time.Time     `json:"document_verified_at,omitempty"`
+	DocumentVerifiedBy *uuid.UUID     `json:"document_verified_by,omitempty"`
+
+	TradeName           string `json:"trade_name,omitempty"`
+	Phone               string `json:"phone,omitempty"`
+	AddressZip          string `json:"address_zip,omitempty"`
+	AddressStreet       string `json:"address_street,omitempty"`
+	AddressNumber       string `json:"address_number,omitempty"`
+	AddressComplement   string `json:"address_complement,omitempty"`
+	AddressNeighborhood string `json:"address_neighborhood,omitempty"`
+	AddressCity         string `json:"address_city,omitempty"`
+	AddressState        string `json:"address_state,omitempty"`
+	AddressCountry      string `json:"address_country,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

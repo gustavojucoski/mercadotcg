@@ -248,6 +248,71 @@ func (r *CardRepo) SearchCardsByName(ctx context.Context, q string, limit int) (
 }
 
 // ----------------------------------------------------------------------------
+// Variant display — batch lookup for stock enrichment
+// ----------------------------------------------------------------------------
+
+// VariantDisplay reúne os campos de exibição de uma variante para uso no
+// endpoint de estoque, evitando N+1 queries.
+type VariantDisplay struct {
+	VariantID     uuid.UUID
+	Finish        string
+	Label         string
+	CardName      string
+	CardNumber    string
+	SetName       string
+	SetCode       string
+	ImageSmallURL string
+}
+
+const getVariantDisplayBatchSQL = `
+SELECT
+    cv.id,
+    cv.finish::text,
+    COALESCE(cv.label, ''),
+    c.name::text,
+    c.number,
+    cs.name,
+    cs.code,
+    COALESCE(c.image_small_url, '')
+FROM card_variants cv
+JOIN cards c     ON c.id  = cv.card_id
+JOIN card_sets cs ON cs.id = c.set_id
+WHERE cv.id = ANY($1)`
+
+// GetVariantDisplayBatch busca os dados de exibição de um conjunto de variantes
+// em uma única query. Retorna um map keyed por variant_id.
+// IDs não encontrados simplesmente não aparecem no map (sem erro).
+func (r *CardRepo) GetVariantDisplayBatch(
+	ctx context.Context,
+	variantIDs []uuid.UUID,
+) (map[uuid.UUID]VariantDisplay, error) {
+	if len(variantIDs) == 0 {
+		return map[uuid.UUID]VariantDisplay{}, nil
+	}
+
+	rows, err := r.pool.Query(ctx, getVariantDisplayBatchSQL, variantIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get variant display batch: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[uuid.UUID]VariantDisplay, len(variantIDs))
+	for rows.Next() {
+		var d VariantDisplay
+		if err := rows.Scan(
+			&d.VariantID, &d.Finish, &d.Label,
+			&d.CardName, &d.CardNumber,
+			&d.SetName, &d.SetCode,
+			&d.ImageSmallURL,
+		); err != nil {
+			return nil, fmt.Errorf("scan variant display: %w", err)
+		}
+		out[d.VariantID] = d
+	}
+	return out, rows.Err()
+}
+
+// ----------------------------------------------------------------------------
 // Variants
 // ----------------------------------------------------------------------------
 

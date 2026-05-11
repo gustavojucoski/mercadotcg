@@ -4,37 +4,58 @@ Rastreador de preços e marketplace de Pokémon TCG. Agrega listagens ao vivo de
 
 ## Quick Start
 
-### Docker (recomendado)
+### Docker (recomendado) — 1 comando
 
 ```bash
-# 1. Clone e entre no diretório
+# 1. Clone e entre no diretório raiz
 git clone https://github.com/gustavojucoski/mercadotcg
 cd mercadotcg
 
 # 2. Copie e ajuste as variáveis de ambiente
-cp backend/.env.example backend/.env
+cp .env.example .env   # edite o .env e preencha JWT_SECRET no mínimo
 
-# 3. Suba o stack (Postgres + API)
+# 3. Suba o stack completo (Postgres + API + Frontend + Adminer)
 docker compose up --build
-
-# 4. Aplique as migrations
-docker compose exec api go run ./cmd/migrate up
 ```
 
-A API ficará disponível em `http://localhost:8080`.
+| Serviço | URL |
+|---|---|
+| Frontend | http://localhost:3000 |
+| API | http://localhost:8080 |
+| Adminer (DB UI) | http://localhost:8081 |
 
-### Local (sem Docker)
+Na **primeira** execução o Docker compila Go + instala dependências Node (~3 min).
+Nas próximas: `docker compose up` (segundos).
+
+### Rodar só o backend (Go instalado localmente)
 
 ```bash
+# Sobe só o banco
+docker compose up -d db adminer
+
+# Aplica schema + seed + API
 cd backend
-cp .env.example .env       # ajuste DATABASE_URL para seu Postgres local
-go run ./cmd/migrate up    # cria o schema
-go run ./cmd/api           # inicia o servidor
+cp ../.env.example .env  # ou copie o .env da raiz
+go run ./cmd/migrate up
+go run ./cmd/seed
+go run ./cmd/api
+```
+
+### Comandos úteis
+
+```bash
+docker compose logs -f api        # acompanha a API
+docker compose logs -f frontend   # acompanha o Next.js
+docker compose down               # derruba (mantém dados)
+docker compose down -v            # derruba e APAGA o banco
+
+# Importar catálogo de cartas (opcional — o seed já inclui demo data)
+docker compose --profile catalog run --rm import-catalog --recent 5
 ```
 
 ## Variáveis de Ambiente
 
-Arquivo: `backend/.env` (baseado em `backend/.env.example`)
+Arquivo: `.env` na raiz (baseado em `.env.example`)
 
 | Variável | Obrigatória | Descrição |
 |---|---|---|

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/user"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/email"
@@ -16,9 +17,10 @@ import (
 
 // Erros de domínio do AuthService.
 var (
-	ErrEmailNotVerified = errors.New("auth: email não verificado")
-	ErrAccountInactive  = errors.New("auth: conta desativada")
-	ErrTokenNotFound    = errors.New("auth: token inválido ou expirado")
+	ErrEmailNotVerified    = errors.New("auth: email não verificado")
+	ErrAccountInactive     = errors.New("auth: conta desativada")
+	ErrTokenNotFound       = errors.New("auth: token inválido ou expirado")
+	ErrEmailAlreadyVerified = errors.New("auth: email já verificado")
 )
 
 // UserRepository é o subconjunto de persistência de usuários usado pelo AuthService.
@@ -28,6 +30,7 @@ type UserRepository interface {
 	GetByEmail(ctx context.Context, email string) (user.User, error)
 	UpdatePasswordHash(ctx context.Context, id uuid.UUID, hash string) error
 	MarkEmailVerified(ctx context.Context, id uuid.UUID) error
+	CompleteRegistration(ctx context.Context, id uuid.UUID, displayName, passwordHash string) error
 	GetByOAuthProvider(ctx context.Context, provider, providerUID string) (user.User, error)
 	LinkOAuthProvider(ctx context.Context, userID uuid.UUID, provider, providerUID string) error
 }
@@ -71,18 +74,13 @@ func NewService(
 
 // ---- Registro ---------------------------------------------------------------
 
-// RegisterWithEmail cria uma conta e envia email de verificação.
-// A conta só pode fazer login após VerifyEmail ser chamado.
-func (s *Service) RegisterWithEmail(ctx context.Context, emailAddr, password, displayName string) (*user.User, error) {
-	hash, err := HashPassword(password)
-	if err != nil {
-		return nil, err
-	}
+// RegisterWithEmail cria uma conta com email e envia o link de verificação.
+// O usuário só completa o cadastro (nome + senha) ao clicar no link (VerifyEmail).
+func (s *Service) RegisterWithEmail(ctx context.Context, emailAddr string) (*user.User, error) {
 	u := &user.User{
 		ID:           uuid.New(),
 		Email:        emailAddr,
-		DisplayName:  displayName,
-		PasswordHash: hash,
+		DisplayName:  emailAddr,
 		PlatformRole: user.RoleUser,
 		IsActive:     true,
 	}
@@ -90,10 +88,25 @@ func (s *Service) RegisterWithEmail(ctx context.Context, emailAddr, password, di
 		return nil, err
 	}
 	if err := s.sendVerificationEmail(ctx, u); err != nil {
-		// Log mas não falha — conta criada; usuário pode re-solicitar verificação.
-		_ = err
+		log.Error().Err(err).Str("email", u.Email).Msg("enviar email de verificação")
 	}
 	return u, nil
+}
+
+// ResendVerificationEmail reenvia o link de verificação para contas ainda não verificadas.
+// Retorna ErrEmailAlreadyVerified se a conta já foi ativada.
+func (s *Service) ResendVerificationEmail(ctx context.Context, emailAddr string) error {
+	u, err := s.users.GetByEmail(ctx, emailAddr)
+	if err != nil {
+		return nil // anti-enumeração: não revelar se o email existe
+	}
+	if u.IsVerified() {
+		return ErrEmailAlreadyVerified
+	}
+	if err := s.sendVerificationEmail(ctx, &u); err != nil {
+		log.Error().Err(err).Str("email", u.Email).Msg("reenviar email de verificação")
+	}
+	return nil
 }
 
 func (s *Service) sendVerificationEmail(ctx context.Context, u *user.User) error {
@@ -106,19 +119,32 @@ func (s *Service) sendVerificationEmail(ctx context.Context, u *user.User) error
 		return fmt.Errorf("criar token de verificação: %w", err)
 	}
 	verifyURL := s.cfg.FrontendBaseURL + "/auth/verify-email?token=" + plain
+	log.Info().Str("email", u.Email).Str("verify_url", verifyURL).Msg("[dev] link de verificação")
 	msg := email.VerificationEmail(u.Email, u.DisplayName, verifyURL)
 	return s.mailer.Send(ctx, msg)
 }
 
 // ---- Verificação de email ---------------------------------------------------
 
-func (s *Service) VerifyEmail(ctx context.Context, plainToken string) error {
+// VerifyEmail consome o token de verificação, define nome e senha, e emite tokens de sessão.
+func (s *Service) VerifyEmail(ctx context.Context, plainToken, password, displayName string) (accessToken, plainRefresh string, u *user.User, err error) {
 	hash := hashToken(plainToken)
 	userID, err := s.tokens.UseVerificationToken(ctx, hash)
 	if err != nil {
-		return ErrTokenNotFound
+		return "", "", nil, ErrTokenNotFound
 	}
-	return s.users.MarkEmailVerified(ctx, userID)
+	pwHash, err := HashPassword(password)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if err := s.users.CompleteRegistration(ctx, userID, displayName, pwHash); err != nil {
+		return "", "", nil, fmt.Errorf("completar registro: %w", err)
+	}
+	fetchedUser, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("buscar usuário após registro: %w", err)
+	}
+	return s.issueTokens(ctx, &fetchedUser)
 }
 
 // ---- Login ------------------------------------------------------------------

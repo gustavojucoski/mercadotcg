@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -18,8 +19,17 @@ var nonDigit = regexp.MustCompile(`\D`)
 
 // CNPJInfo holds the result of a ReceitaWS lookup.
 type CNPJInfo struct {
-	LegalName string
-	Situation string // "ATIVA" | "BAIXADA" | etc.
+	LegalName           string
+	TradeName           string
+	Situation           string // "ATIVA" | "BAIXADA" | etc.
+	Phone               string
+	AddressZip          string // 8 digits, no mask
+	AddressStreet       string
+	AddressNumber       string
+	AddressComplement   string
+	AddressNeighborhood string
+	AddressCity         string
+	AddressState        string // UF, 2 chars
 }
 
 // ValidateCNPJ strips formatting, checks length, and validates the two check digits.
@@ -133,10 +143,19 @@ func LookupCNPJ(ctx context.Context, digits string) (*CNPJInfo, error) {
 	}
 
 	var payload struct {
-		Nome     string `json:"nome"`
-		Situacao string `json:"situacao"`
-		Status   string `json:"status"` // "ERROR" quando não encontrado
-		Message  string `json:"message"`
+		Nome        string `json:"nome"`
+		Fantasia    string `json:"fantasia"`
+		Situacao    string `json:"situacao"`
+		Status      string `json:"status"` // "ERROR" quando não encontrado
+		Message     string `json:"message"`
+		Telefone1   string `json:"ddd_telefone_1"`
+		CEP         string `json:"cep"`
+		Logradouro  string `json:"logradouro"`
+		Numero      string `json:"numero"`
+		Complemento string `json:"complemento"`
+		Bairro      string `json:"bairro"`
+		Municipio   string `json:"municipio"`
+		UF          string `json:"uf"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decodificar resposta ReceitaWS: %w", err)
@@ -145,7 +164,16 @@ func LookupCNPJ(ctx context.Context, digits string) (*CNPJInfo, error) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalid, payload.Message)
 	}
 	return &CNPJInfo{
-		LegalName: payload.Nome,
-		Situation: payload.Situacao,
+		LegalName:           payload.Nome,
+		TradeName:           payload.Fantasia,
+		Situation:           payload.Situacao,
+		Phone:               payload.Telefone1,
+		AddressZip:          strings.ReplaceAll(payload.CEP, "-", ""),
+		AddressStreet:       payload.Logradouro,
+		AddressNumber:       payload.Numero,
+		AddressComplement:   payload.Complemento,
+		AddressNeighborhood: payload.Bairro,
+		AddressCity:         payload.Municipio,
+		AddressState:        payload.UF,
 	}, nil
 }

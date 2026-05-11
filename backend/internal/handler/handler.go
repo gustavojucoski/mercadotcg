@@ -44,6 +44,8 @@ func writeErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, postgres.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errorBody{Error: "registro não encontrado"})
+	case errors.Is(err, postgres.ErrDocumentAlreadyExists):
+		writeJSON(w, http.StatusConflict, errorBody{Error: "Já existe uma loja cadastrada com este CPF/CNPJ"})
 	case errors.Is(err, postgres.ErrAlreadyExists):
 		writeJSON(w, http.StatusConflict, errorBody{Error: "registro já existe"})
 	case errors.Is(err, postgres.ErrInsufficientStock):

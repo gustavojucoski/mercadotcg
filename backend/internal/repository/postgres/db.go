@@ -15,8 +15,9 @@ import (
 // Erros sentinela usados por todos os repositórios deste pacote.
 // Convenção: handlers e services comparam com errors.Is(err, postgres.ErrNotFound).
 var (
-	ErrNotFound      = errors.New("postgres: registro não encontrado")
-	ErrAlreadyExists = errors.New("postgres: registro já existe")
+	ErrNotFound              = errors.New("postgres: registro não encontrado")
+	ErrAlreadyExists         = errors.New("postgres: registro já existe")
+	ErrDocumentAlreadyExists = errors.New("postgres: já existe uma loja com este CPF/CNPJ")
 )
 
 // PgUniqueViolation é o SQLSTATE retornado pelo Postgres quando uma UNIQUE

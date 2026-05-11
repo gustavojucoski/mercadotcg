@@ -61,20 +61,36 @@ export async function login(email: string, password: string): Promise<AuthTokens
   return tokens
 }
 
-export async function register(
-  email: string,
-  password: string,
-  displayName: string
-): Promise<void> {
+export async function register(email: string): Promise<void> {
   const res = await fetch(`${API_URL}/api/v1/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, display_name: displayName }),
+    body: JSON.stringify({ email }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error || `Erro ${res.status}`)
   }
+}
+
+export async function verifyEmailWithSetup(
+  token: string,
+  password: string,
+  displayName: string
+): Promise<AuthTokens> {
+  const res = await fetch(`${API_URL}/api/v1/auth/verify-email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password, display_name: displayName }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || 'Erro ao verificar email')
+  }
+  const tokens: AuthTokens = await res.json()
+  setAccessToken(tokens.access_token)
+  setRefreshToken(tokens.refresh_token)
+  return tokens
 }
 
 export async function logout(): Promise<void> {

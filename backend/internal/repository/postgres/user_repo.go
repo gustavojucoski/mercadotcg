@@ -83,6 +83,18 @@ func (r *UserRepo) MarkEmailVerified(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (r *UserRepo) CompleteRegistration(ctx context.Context, id uuid.UUID, displayName, passwordHash string) error {
+	const q = `UPDATE users SET password_hash = $1, display_name = $2, email_verified_at = NOW(), updated_at = NOW() WHERE id = $3`
+	tag, err := r.pool.Exec(ctx, q, passwordHash, displayName, id)
+	if err != nil {
+		return fmt.Errorf("user complete registration: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *UserRepo) UpdatePlatformRole(ctx context.Context, id uuid.UUID, role user.PlatformRole) error {
 	const q = `UPDATE users SET platform_role = $1, updated_at = NOW() WHERE id = $2`
 	tag, err := r.pool.Exec(ctx, q, string(role), id)
@@ -140,6 +152,30 @@ func (r *UserRepo) List(ctx context.Context, limit, offset int) ([]user.User, er
 	rows, err := r.pool.Query(ctx, q, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("user list: %w", err)
+	}
+	defer rows.Close()
+	var users []user.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+func (r *UserRepo) SearchByEmail(ctx context.Context, q string, limit int) ([]user.User, error) {
+	const sql = `
+		SELECT id, email, display_name, COALESCE(avatar_url,''), COALESCE(password_hash,''),
+		       platform_role, email_verified_at, is_active, created_at, updated_at
+		FROM users
+		WHERE email ILIKE $1
+		ORDER BY email
+		LIMIT $2`
+	rows, err := r.pool.Query(ctx, sql, "%"+q+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("user search: %w", err)
 	}
 	defer rows.Close()
 	var users []user.User

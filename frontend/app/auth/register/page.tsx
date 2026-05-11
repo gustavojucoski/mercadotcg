@@ -5,9 +5,7 @@ import Link from 'next/link'
 import { register } from '@/lib/auth'
 
 export default function RegisterPage() {
-  const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -17,7 +15,7 @@ export default function RegisterPage() {
     setError(null)
     setLoading(true)
     try {
-      await register(email, password, displayName)
+      await register(email)
       setSuccess(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao criar conta')
@@ -35,7 +33,7 @@ export default function RegisterPage() {
             <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 mb-2">Verifique seu email</h2>
             <p className="text-sm text-zinc-500">
               Enviamos um link de confirmação para <strong>{email}</strong>.
-              Clique no link para ativar sua conta.
+              Clique no link para definir sua senha e ativar a conta.
             </p>
             <Link href="/auth/login" className="mt-6 inline-block text-sm text-violet-600 hover:underline">
               Voltar para o login
@@ -63,21 +61,6 @@ export default function RegisterPage() {
             )}
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300" htmlFor="name">
-                Nome
-              </label>
-              <input
-                id="name"
-                type="text"
-                value={displayName}
-                onChange={e => setDisplayName(e.target.value)}
-                required
-                className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
-                placeholder="Seu nome"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300" htmlFor="email">
                 Email
               </label>
@@ -88,25 +71,9 @@ export default function RegisterPage() {
                 onChange={e => setEmail(e.target.value)}
                 required
                 autoComplete="email"
+                autoFocus
                 className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
                 placeholder="seu@email.com"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300" htmlFor="password">
-                Senha
-              </label>
-              <input
-                id="password"
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                minLength={8}
-                autoComplete="new-password"
-                className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
-                placeholder="Mínimo 8 caracteres"
               />
             </div>
 
@@ -115,7 +82,7 @@ export default function RegisterPage() {
               disabled={loading}
               className="rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50 transition-colors"
             >
-              {loading ? 'Criando conta...' : 'Criar conta'}
+              {loading ? 'Enviando...' : 'Continuar'}
             </button>
           </form>
         </div>

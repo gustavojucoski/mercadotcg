@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/matching"
@@ -29,26 +28,25 @@ func NewExternalRefRepo(pool *pgxpool.Pool) *ExternalRefRepo {
 
 const insertExternalRefSQL = `
 INSERT INTO external_card_refs (
-    variant_id, source, external_id, external_url, language, confidence, raw_title
+    variant_id, source, external_id, external_url, language, confidence, needs_review, raw_title
 ) VALUES (
-    $1, $2, $3, NULLIF($4, ''), $5, $6, NULLIF($7, '')
+    $1, $2::price_source, $3, NULLIF($4, ''), $5, $6, $7, NULLIF($8, '')
 )
+ON CONFLICT (source, external_id) DO NOTHING
 RETURNING id, matched_at`
 
 // Create insere um novo match. (source, external_id) é UNIQUE — colisão
-// devolve ErrAlreadyExists, sinalizando que já existe um match para essa
-// combinação (talvez para outra variante — vale revisar manualmente).
+// devolve ErrAlreadyExists sem gerar erro no log do Postgres.
 func (r *ExternalRefRepo) Create(ctx context.Context, ref *matching.ExternalCardRef) error {
 	err := r.pool.QueryRow(ctx, insertExternalRefSQL,
 		ref.VariantID, string(ref.Source), ref.ExternalID, ref.ExternalURL,
-		ref.Language, ref.Confidence, ref.RawTitle,
+		ref.Language, ref.Confidence, ref.NeedsReview, ref.RawTitle,
 	).Scan(&ref.ID, &ref.MatchedAt)
 
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrAlreadyExists
+	}
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == PgUniqueViolation {
-			return ErrAlreadyExists
-		}
 		return fmt.Errorf("insert external_card_ref: %w", err)
 	}
 	return nil
@@ -56,9 +54,9 @@ func (r *ExternalRefRepo) Create(ctx context.Context, ref *matching.ExternalCard
 
 const selectBySourceIDSQL = `
 SELECT id, variant_id, source, external_id, COALESCE(external_url, ''), language,
-       confidence, COALESCE(raw_title, ''), matched_at
+       confidence, needs_review, COALESCE(raw_title, ''), matched_at
 FROM external_card_refs
-WHERE source = $1 AND external_id = $2`
+WHERE source = $1::price_source AND external_id = $2`
 
 // GetBySourceID devolve o match para um (source, external_id) específico.
 // Usado pelo pipeline de scraping para decidir se persiste a observação.
@@ -71,7 +69,7 @@ func (r *ExternalRefRepo) GetBySourceID(
 	var src string
 	err := r.pool.QueryRow(ctx, selectBySourceIDSQL, string(source), externalID).Scan(
 		&ref.ID, &ref.VariantID, &src, &ref.ExternalID, &ref.ExternalURL, &ref.Language,
-		&ref.Confidence, &ref.RawTitle, &ref.MatchedAt,
+		&ref.Confidence, &ref.NeedsReview, &ref.RawTitle, &ref.MatchedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return matching.ExternalCardRef{}, ErrNotFound
@@ -85,7 +83,7 @@ func (r *ExternalRefRepo) GetBySourceID(
 
 const listByVariantSQL = `
 SELECT id, variant_id, source, external_id, COALESCE(external_url, ''), language,
-       confidence, COALESCE(raw_title, ''), matched_at
+       confidence, needs_review, COALESCE(raw_title, ''), matched_at
 FROM external_card_refs
 WHERE variant_id = $1
 ORDER BY source, language`
@@ -108,7 +106,7 @@ func (r *ExternalRefRepo) ListByVariant(
 		var src string
 		if err := rows.Scan(
 			&ref.ID, &ref.VariantID, &src, &ref.ExternalID, &ref.ExternalURL, &ref.Language,
-			&ref.Confidence, &ref.RawTitle, &ref.MatchedAt,
+			&ref.Confidence, &ref.NeedsReview, &ref.RawTitle, &ref.MatchedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan external_card_ref: %w", err)
 		}
@@ -116,4 +114,41 @@ func (r *ExternalRefRepo) ListByVariant(
 		out = append(out, ref)
 	}
 	return out, rows.Err()
+}
+
+const upsertMatchCandidateSQL = `
+INSERT INTO match_candidates (
+    source, external_id, raw_title, raw_number, raw_set_code,
+    best_candidate_variant_id, best_score
+) VALUES (
+    $1::price_source, $2, $3, NULLIF($4, ''), NULLIF($5, ''),
+    $6, $7
+)
+ON CONFLICT (source, external_id) WHERE reviewed_at IS NULL
+DO UPDATE SET
+    best_score                = EXCLUDED.best_score,
+    best_candidate_variant_id = EXCLUDED.best_candidate_variant_id
+RETURNING id, created_at`
+
+// UpsertMatchCandidate insere ou atualiza um candidato de matching em quarentena.
+// A constraint parcial (WHERE reviewed_at IS NULL) garante que candidatos já
+// revisados não sejam sobrescritos.
+func (r *ExternalRefRepo) UpsertMatchCandidate(
+	ctx context.Context,
+	c *matching.MatchCandidate,
+) error {
+	var variantID *uuid.UUID
+	if c.BestCandidateVariantID != nil && *c.BestCandidateVariantID != uuid.Nil {
+		variantID = c.BestCandidateVariantID
+	}
+
+	err := r.pool.QueryRow(ctx, upsertMatchCandidateSQL,
+		string(c.Source), c.ExternalID, c.RawTitle,
+		c.RawNumber, c.RawSetCode,
+		variantID, c.BestScore,
+	).Scan(&c.ID, &c.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert match_candidate: %w", err)
+	}
+	return nil
 }

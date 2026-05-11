@@ -2,6 +2,33 @@
 
 > Documento vivo. Atualizar a cada decisão arquitetural relevante e ao final de cada fase de trabalho.
 
+## 0. Agentes Especializados
+
+Este projeto possui agentes especializados. **Sempre delegue a tarefa ao agente correto antes de escrever qualquer código.** Use o agente via ferramenta `Agent` com o `subagent_type` correspondente.
+
+| Agente | `subagent_type` | Quando usar |
+|---|---|---|
+| Go Backend Engineer | `go-backend-engineer` | Qualquer código Go: handlers, repositórios, serviços, scrapers, migrations, testes de integração Go |
+| Next.js Frontend Engineer | `nextjs-frontend-engineer` | Qualquer código frontend: pages, components, lib/, hooks, estilos Tailwind, otimizações de performance |
+| Senior Software Architect | `senior-software-architect` | Decisões arquiteturais, novos ADRs, avaliação de tecnologias, design de módulos novos |
+| Product Manager | `product-manager` | Priorização de backlog, definição de MVP, análise de ROI de features, especificação de requisitos |
+| QA / SDET Engineer | `qa-sdet-engineer` | Testes integrados com testcontainers, E2E com Playwright, revisão de cobertura, CI/CD |
+
+**Regras de uso:**
+- Tarefas puramente de **leitura/análise** (explicar código, responder perguntas) podem ser feitas inline.
+- Tarefas que **escrevem ou modificam código** devem sempre passar pelo agente especializado.
+- Para mudanças que tocam **ambas as camadas** (ex.: novo endpoint + tela nova), spawne os dois agentes em paralelo com contexto suficiente para cada um.
+- Se o agente precisar de contexto de uma sessão anterior, inclua no prompt as informações relevantes (tipos, interfaces, convenções).
+
+**Workflow obrigatório pós-entrega — QA automático:**
+Após qualquer entrega de código novo ou funcionalidade (quando um ou mais agentes especializados finalizarem a implementação), o Claude principal **deve obrigatoriamente** spawnar o `qa-sdet-engineer` para revisar o que foi criado e propor/escrever testes. Não pular esta etapa mesmo que o usuário não solicite explicitamente. O prompt para o QA deve incluir: o que foi criado, quais arquivos foram modificados, as interfaces e contratos relevantes, e o pedido de suíte de testes cobrindo happy path, edge cases e regressões.
+
+**Workflow obrigatório de revisão — PM → Arquiteto:**
+Quando o usuário pedir explicitamente para "revisar", "analisar", "avaliar" uma feature, decisão ou conjunto de mudanças, o Claude principal **deve obrigatoriamente** executar a seguinte sequência em dois passos:
+1. Spawnar `product-manager` com o contexto completo do que está sendo revisado. Aguardar o retorno com análise de ROI, riscos de produto, gaps de UX e priorização.
+2. Com o output do PM em mãos, spawnar `senior-software-architect` passando tanto o contexto original quanto o resultado da análise do PM. O arquiteto deve sugerir ajustes arquiteturais, novos ADRs se necessário, e validar ou questionar as decisões de design à luz dos trade-offs de produto levantados pelo PM.
+Apresentar ao usuário os dois outputs de forma consolidada.
+
 ## 1. Visão
 
 Marketplace e rastreador de preços de Pokémon TCG, focado em **vendas reais** (na própria plataforma e via scraping de fontes externas) e em **gestão de coleção** com rigor de variantes (Master Ball, Poke Ball Mirror, Holo, Reverse Holo, etc.).
@@ -218,16 +245,25 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 **Razão:** ReceitaWS é gratuito e suficiente para o MVP. CPF de pessoa física não tem API pública de situação cadastral, então aprovação manual é obrigatória.
 **Gotcha pgx/v5:** ENUMs Postgres (`document_type`, `document_status`) precisam de cast explícito no SQL (`$n::document_type`) — pgx não faz cast automático de `string` para ENUM customizado.
 
-### ADR-019 — Navegação admin inline no header (não dropdown)
-**Decisão:** Links "Busca Externa" e "Lojas" aparecem inline no `SiteHeader` quando `platform_role === 'platform_admin'`. Não estão no dropdown do `UserMenu`.
-**Razão:** Navegação principal deve estar visível no header, não escondida em dropdown. O UserMenu serve apenas para ações do usuário (conta, logout).
-**Layout admin:** `app/admin/layout.tsx` é o guard — redireciona não-admins para `/auth/login`. As páginas filhas (`/admin/page.tsx`, `/admin/lojas/*`) não têm guard próprio nem header duplicado.
+### ADR-020 — Registro em duas etapas: email-first
+**Decisão:** `POST /auth/register` aceita apenas `email`. O usuário recebe um link de verificação; ao clicar, a página `/auth/verify-email` exibe um formulário para definir nome e senha. `POST /auth/verify-email` recebe `{ token, password, display_name }`, completa o cadastro (`CompleteRegistration`: password_hash + display_name + email_verified_at em um único UPDATE) e devolve tokens de sessão (auto-login).
+**Razão:** Reduz abandono no cadastro (menor fricção na entrada) e garante que apenas emails válidos chegam à etapa de criação de senha.
+**Reenvio:** Se o mesmo email tentar se registrar novamente e a conta ainda não estiver verificada, o backend reenvia o link em vez de retornar 409. Conta já verificada → 409.
+**Dev:** O `verify_url` é sempre logado no stdout da API (`[dev] link de verificação`) para facilitar testes sem depender de entrega de email.
+**Email prod:** Requer domínio verificado no Resend. Sem domínio verificado, `onboarding@resend.dev` só entrega para o email do dono da conta Resend.
+
+### ADR-019 — Navegação via hover dropdowns no SiteHeader
+**Decisão:** "Minha Loja" e "Admin" são botões com hover dropdown no `SiteHeader`. "Admin" expande para "Busca Externa" e "Lojas". "Minha Loja" expande para as abas da loja corrente (Perfil, Membros, Selados, Singles) quando o pathname está em `/lojas/{id}/*`, ou para "Ir para minha loja" caso contrário. O `UserMenu` serve apenas para ações do usuário (conta, logout).
+**Razão:** Dropdowns contextuais permitem navegar entre páginas da loja e retornar ao app global sem depender do botão voltar do browser.
+**Implementação:** `useState<string | null>` no SiteHeader para controlar qual dropdown está aberto; `onMouseEnter`/`onMouseLeave` nos wrappers. Pathname extraído via `usePathname()` para detectar `currentLojaId` com regex `/^\/lojas\/([^/]+)/`.
+**Layout admin:** `app/admin/layout.tsx` é o guard — redireciona não-admins para `/auth/login`. As páginas filhas não têm guard próprio nem header duplicado.
+**Layout loja:** `app/lojas/[id]/layout.tsx` exibe barra com logo, nome, role e abas de navegação. Contém seta "←" que leva ao Início.
 
 ## 5. Status Atual
 
 **Fase:** Auth completo + gestão de lojas com validação de documento.
 
-### Migrations aplicadas (000001–000008)
+### Migrations (000001–000010)
 
 | # | Conteúdo |
 |---|---|
@@ -239,6 +275,8 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 | 000006 | `users`, `user_oauth_providers`, `email_verification_tokens`, `password_reset_tokens`, `refresh_tokens`, `store_members`; FKs `listings.seller_id` e `stores.owner_id` ativadas |
 | 000007 | Seed admin: `gustavojucoski@gmail.com` / `ewq9brd5gan2dzf@FZD`, `platform_admin`, email verificado |
 | 000008 | `stores` + colunas `document_type`, `document_number`, `document_status`, `legal_name`, `document_verified_at`, `document_verified_by`; índice unique parcial |
+| 000009 | `stores` + colunas de endereço (address_zip … address_country) separadas em migration dedicada |
+| 000010 | `store_audit_log` — id, store_id, changed_by, change_type, changes (JSONB), created_at; índice em (store_id, created_at DESC) |
 
 ### Endpoints HTTP disponíveis
 
@@ -246,11 +284,11 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 GET  /healthz
 
 # Auth (público)
-POST /api/v1/auth/register
+POST /api/v1/auth/register          # body: { email } — envia link de verificação; se email já existe e não verificado, reenvia
 POST /api/v1/auth/login
 GET  /api/v1/auth/google
 GET  /api/v1/auth/google/callback
-POST /api/v1/auth/verify-email
+POST /api/v1/auth/verify-email      # body: { token, password, display_name } — completa cadastro + retorna tokens (auto-login)
 POST /api/v1/auth/forgot-password
 POST /api/v1/auth/reset-password
 POST /api/v1/auth/refresh
@@ -266,6 +304,7 @@ GET  /api/v1/external-search?number=&set=
 
 # Admin — usuários (RequirePlatformAdmin)
 GET    /api/v1/admin/users
+GET    /api/v1/admin/users/search?q=
 POST   /api/v1/admin/users
 PATCH  /api/v1/admin/users/{id}/role
 DELETE /api/v1/admin/users/{id}
@@ -275,17 +314,28 @@ GET    /api/v1/admin/stores                      # lista paginada
 POST   /api/v1/admin/stores                      # cria loja + valida CNPJ/CPF
 GET    /api/v1/admin/stores/cnpj-lookup?cnpj=    # proxy ReceitaWS (rota literal ANTES de {id})
 GET    /api/v1/admin/stores/{id}
-PATCH  /api/v1/admin/stores/{id}
+PATCH  /api/v1/admin/stores/{id}                 # aceita owner_id para trocar proprietário
 POST   /api/v1/admin/stores/{id}/verify-document # aprovação manual de documento
+POST   /api/v1/admin/stores/{id}/logo
+GET    /api/v1/admin/stores/{id}/audit-log
 POST   /api/v1/admin/stores/{id}/members
 PATCH  /api/v1/admin/stores/{id}/members/{userId}/role
 DELETE /api/v1/admin/stores/{id}/members/{userId}
 GET    /api/v1/admin/stores/{id}/members
 
-# Lojas — estoque (RequireStoreRole ou RequirePlatformAdmin)
-GET  /api/v1/stores/{id}/stock
-POST /api/v1/stores/{id}/stock/purchase
-POST /api/v1/stores/{id}/stock-items/{itemID}/sale
+# Lojas — acesso do próprio membro (RequireAuth / RequireStoreRole)
+GET    /api/v1/stores/{id}                              # público
+GET    /api/v1/stores/me                                # lojas do usuário autenticado
+GET    /api/v1/stores/{id}/my-role                      # role do caller nesta loja
+GET    /api/v1/stores/{id}/members                      # (viewer+)
+POST   /api/v1/stores/{id}/members                      # (admin)
+PATCH  /api/v1/stores/{id}/members/{userId}/role        # (admin)
+DELETE /api/v1/stores/{id}/members/{userId}             # (admin)
+PATCH  /api/v1/stores/{id}/profile                      # edição restrita: nome, endereço (admin)
+POST   /api/v1/stores/{id}/logo                         # (admin)
+GET    /api/v1/stores/{id}/stock
+POST   /api/v1/stores/{id}/stock/purchase               # (stock_manager+)
+POST   /api/v1/stores/{id}/stock-items/{itemID}/sale    # (stock_manager+)
 
 # Variantes
 GET  /api/v1/variants/{id}/signal
@@ -304,32 +354,40 @@ GET  /api/v1/variants/{id}/signal
 |---|---|---|
 | `/` | público | Homepage com hero, feature cards, SiteHeader |
 | `/auth/login` | público | Email+senha; admin→/admin, user→/ |
-| `/auth/register` | público | Cadastro (usuários comuns) |
-| `/auth/verify-email?token=` | público | Confirmação de email |
+| `/auth/register` | público | Cadastro email-only (step 1) |
+| `/auth/verify-email?token=` | público | Define nome + senha após confirmar email (step 2, auto-login) |
 | `/auth/callback?access_token=&refresh_token=` | público | Google OAuth redirect |
 | `/auth/forgot-password` | público | Solicita reset |
 | `/auth/reset-password?token=` | público | Nova senha |
 | `/admin` | platform_admin | Busca Externa com SearchForm |
 | `/admin/lojas` | platform_admin | Lista de lojas com status de documento |
 | `/admin/lojas/nova` | platform_admin | Formulário de cadastro CNPJ/CPF |
+| `/admin/lojas/[id]` | platform_admin | Edição completa da loja + log de auditoria |
+| `/lojas/me` | autenticado | Redireciona para a loja do usuário |
+| `/lojas/[id]/perfil` | membro da loja | Edição restrita (nome, logo, endereço) |
+| `/lojas/[id]/membros` | membro da loja | Gestão de membros (admin: adicionar/remover/alterar role) |
+| `/lojas/[id]/selados` | membro da loja | Placeholder — estoque de selados |
+| `/lojas/[id]/singles` | membro da loja | Placeholder — estoque de singles (multi-TCG futuro) |
 
 ## 6. Próximos Passos (priorizados)
 
 1. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso o `pricesignal` fica com dados do seed e nunca atualiza com preços reais dos scrapers.
 2. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`. Hoje os refs são inseridos manualmente pelo seed.
 3. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
-4. **Gestão de lojas — página de detalhe** — `GET /admin/lojas/{id}` com edição de campos e listagem de membros.
-5. **Frontend estoque** — `GET /stores/{id}/stock?with_signal=true` → página pública de estoque da loja com sinais de preço.
+4. **Frontend estoque de singles** — `/lojas/[id]/singles` com cadastro de cards. Suporte multi-TCG desde o início: o formulário de seleção de carta não pode ser Pokémon-only; modelar de forma genérica (TCG + set + número/ID de carta).
+5. **Frontend estoque de selados** — `/lojas/[id]/selados` com cadastro de produtos selados (booster box, ETB, etc.).
 6. **Testes integrados** — `tests/integration` com `testcontainers-go` para repos críticos: `StockRepo` (transações, custo médio ponderado), `PriceDailyRepo.RebuildDay`, `forex.Service` com fake Provider.
 7. **Marketplace público** — listings, reservas e checkout. Entra integração de pagamentos (seção 9).
 
 ## 7. Convenções
 
+- **Agentes**: toda tarefa que escreve ou modifica código deve ser delegada ao agente especializado (ver Seção 0). Claude principal coordena e revisa; agentes executam.
 - **Go**: pacotes em `lowercase`, exportados em `CamelCase`. Sem stutter (`card.Card`). Erros sempre embrulhados com `fmt.Errorf("...: %w", err)`. Sentinelas exportados (`ErrNotFound`, `ErrAlreadyExists`, `ErrInsufficientStock`).
 - **SQL**: snake_case. ENUMs no plural natural. Toda alteração de ENUM = nova migration. Nunca editar migration já aplicada.
 - **pgx/v5 + ENUMs customizados**: sempre usar cast explícito no SQL (`$n::nome_do_enum`). pgx não faz auto-cast de `string` para ENUM Postgres.
 - **Frontend**: App Router. Server component por padrão; `"use client"` só quando há estado/eventos/hooks. Auth guard centralizado em `app/admin/layout.tsx` — páginas filhas não duplicam o guard. `NEXT_PUBLIC_API_URL` via `.env.local`.
 - **Docker**: `cmd/migrate` e `cmd/seed` leem `DATABASE_URL` diretamente — **não usam `config.Load()`** (que exigiria JWT_SECRET e outras vars de auth desnecessárias nesses binários).
+- **Multi-TCG**: o sistema deve suportar qualquer TCG (não só Pokémon). Ao implementar qualquer feature de catálogo de cartas ou estoque de singles, modelar de forma agnóstica ao TCG (campo `tcg` ou similar). Não assumir Pokémon como padrão hard-coded.
 
 ## 8. O que NÃO está pronto
 
@@ -340,7 +398,7 @@ GET  /api/v1/variants/{id}/signal
 - Cartas gradeadas: `stock_items` agrega por `grade` mas não distingue dois "PSA 10" com cert numbers diferentes (ver ADR-009).
 - Reservas de estoque (`reservation`/`release`): ENUMs declarados em `stock_movement_kind` mas código não os emite ainda.
 - Pipeline de scraping → matching → `price_history` não existe. Scraper retorna ao caller mas não persiste.
-- Emails de transação funcionam apenas com `RESEND_API_KEY` configurada; sem a chave usa `NoopProvider` (loga no stdout, não envia).
+- Emails de transação funcionam apenas com `RESEND_API_KEY` configurada; sem a chave usa `NoopProvider` (loga no stdout, não envia). O `verify_url` é sempre logado no stdout mesmo quando Resend está ativo — útil em dev. Em produção, exige domínio verificado no Resend (`EMAIL_FROM_ADDRESS` deve usar esse domínio); `onboarding@resend.dev` só entrega para o email do dono da conta.
 - Google OAuth requer `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL` e `OAUTH_STATE_HMAC_KEY` configurados.
 
 ## 9. Integração de Pagamentos (planejada)

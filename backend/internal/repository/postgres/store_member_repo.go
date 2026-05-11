@@ -23,9 +23,14 @@ func NewStoreMemberRepo(pool *pgxpool.Pool) *StoreMemberRepo {
 }
 
 // GetMembership retorna o store_role do usuário na loja.
-// Retorna ErrNotFound se o usuário não for membro da loja.
+// Usuários que são owner da loja recebem 'admin' mesmo sem linha em store_members.
+// Retorna ErrNotFound se o usuário não for membro nem owner.
 func (r *StoreMemberRepo) GetMembership(ctx context.Context, storeID, userID uuid.UUID) (user.StoreRole, error) {
-	const q = `SELECT role FROM store_members WHERE store_id = $1 AND user_id = $2`
+	const q = `
+		SELECT COALESCE(sm.role, 'admin')
+		FROM stores s
+		LEFT JOIN store_members sm ON sm.store_id = s.id AND sm.user_id = $2
+		WHERE s.id = $1 AND (sm.user_id = $2 OR s.owner_id = $2)`
 	var roleStr string
 	err := r.pool.QueryRow(ctx, q, storeID, userID).Scan(&roleStr)
 	if errors.Is(err, pgx.ErrNoRows) {

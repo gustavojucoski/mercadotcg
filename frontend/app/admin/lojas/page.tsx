@@ -126,15 +126,23 @@ export default function LojasPage() {
                     {new Date(s.created_at).toLocaleDateString('pt-BR')}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {s.document_status === 'pending' && (
-                      <button
-                        onClick={() => handleVerify(s.id)}
-                        disabled={verifying === s.id}
-                        className="text-xs text-violet-600 hover:text-violet-700 dark:text-violet-400 disabled:opacity-50"
+                    <div className="flex items-center justify-end gap-3">
+                      <Link
+                        href={`/admin/lojas/${s.id}`}
+                        className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
                       >
-                        {verifying === s.id ? 'Verificando...' : 'Verificar manualmente'}
-                      </button>
-                    )}
+                        Editar
+                      </Link>
+                      {s.document_status === 'pending' && (
+                        <button
+                          onClick={() => handleVerify(s.id)}
+                          disabled={verifying === s.id}
+                          className="text-xs text-violet-600 hover:text-violet-700 dark:text-violet-400 disabled:opacity-50"
+                        >
+                          {verifying === s.id ? 'Verificando...' : 'Verificar manualmente'}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

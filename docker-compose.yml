@@ -1,0 +1,154 @@
+# docker-compose para desenvolvimento local — fluxo 100% containerizado.
+#
+# Você não precisa de Go ou Node instalados: tudo compila dentro do container.
+#
+# Uso típico:
+#   docker compose up --build         # primeira vez (build + tudo)
+#   docker compose up                 # próximas vezes (sem rebuild)
+#   docker compose logs -f api        # acompanha a API
+#   docker compose logs -f frontend   # acompanha o frontend
+#   docker compose down               # derruba (mantém banco)
+#   docker compose down -v            # derruba e APAGA dados do banco
+#
+# Variáveis de ambiente: copie .env.example → .env e preencha os valores.
+
+services:
+  # -----------------------------------------------------------------------
+  # Postgres 16 — fonte de verdade.
+  # -----------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: mercadotcg-db
+    environment:
+      POSTGRES_USER: mercadotcg
+      POSTGRES_PASSWORD: mercadotcg
+      POSTGRES_DB: mercadotcg
+    ports:
+      - "5432:5432"
+    volumes:
+      - mercadotcg-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mercadotcg -d mercadotcg"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # -----------------------------------------------------------------------
+  # Adminer — UI web para navegar nas tabelas (http://localhost:8081).
+  # -----------------------------------------------------------------------
+  adminer:
+    image: adminer:4
+    container_name: mercadotcg-adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+
+  # -----------------------------------------------------------------------
+  # migrate — one-shot. Aplica todas as migrations e sai.
+  # -----------------------------------------------------------------------
+  migrate:
+    build: ./backend
+    container_name: mercadotcg-migrate
+    command: ["/app/migrate", "up"]
+    environment:
+      DATABASE_URL: "postgres://mercadotcg:mercadotcg@db:5432/mercadotcg?sslmode=disable"
+      MIGRATIONS_PATH: "/app/migrations"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # -----------------------------------------------------------------------
+  # seed — one-shot. Roda só depois das migrations terminarem.
+  # Idempotente: detecta se a loja demo já existe e pula a parte de estoque.
+  # -----------------------------------------------------------------------
+  seed:
+    build: ./backend
+    container_name: mercadotcg-seed
+    command: ["/app/seed"]
+    environment:
+      DATABASE_URL: "postgres://mercadotcg:mercadotcg@db:5432/mercadotcg?sslmode=disable"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # -----------------------------------------------------------------------
+  # api — sobe depois do seed terminar.
+  # -----------------------------------------------------------------------
+  api:
+    build: ./backend
+    container_name: mercadotcg-api
+    command: ["/app/api"]
+    environment:
+      DATABASE_URL: "postgres://mercadotcg:mercadotcg@db:5432/mercadotcg?sslmode=disable"
+      HTTP_PORT: "8080"
+      APP_ENV: "development"
+      LOG_LEVEL: "info"
+      JWT_SECRET:            "${JWT_SECRET}"
+      JWT_ACCESS_TTL:        "${JWT_ACCESS_TTL:-15m}"
+      JWT_REFRESH_TTL:       "${JWT_REFRESH_TTL:-720h}"
+      FRONTEND_BASE_URL:     "${FRONTEND_BASE_URL:-http://localhost:3000}"
+      OAUTH_STATE_HMAC_KEY:  "${OAUTH_STATE_HMAC_KEY:-}"
+      GOOGLE_CLIENT_ID:      "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET:  "${GOOGLE_CLIENT_SECRET:-}"
+      GOOGLE_REDIRECT_URL:   "${GOOGLE_REDIRECT_URL:-http://localhost:8080/api/v1/auth/google/callback}"
+      RESEND_API_KEY:        "${RESEND_API_KEY:-}"
+      EMAIL_FROM_ADDRESS:    "${EMAIL_FROM_ADDRESS:-noreply@mercadotcg.com.br}"
+      POKEWALLET_API_KEY:    "${POKEWALLET_API_KEY:-}"
+      EBAY_CLIENT_ID:        "${EBAY_CLIENT_ID:-}"
+      EBAY_CLIENT_SECRET:    "${EBAY_CLIENT_SECRET:-}"
+      POKEMON_TCG_API_KEY:   "${POKEMON_TCG_API_KEY:-}"
+      UPLOADS_DIR:           "/app/uploads"
+      UPLOADS_BASE_URL:      "${UPLOADS_BASE_URL:-http://localhost:8080/uploads}"
+    volumes:
+      - ./backend/uploads:/app/uploads
+    ports:
+      - "8080:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # frontend — Next.js em modo dev com hot reload.
+  # -----------------------------------------------------------------------
+  frontend:
+    build: ./frontend
+    container_name: mercadotcg-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:8080"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # import-catalog — service opcional sob profile "catalog".
+  #
+  # NÃO sobe em `docker compose up` normal. Você dispara assim:
+  #
+  #   docker compose --profile catalog run --rm import-catalog
+  #   docker compose --profile catalog run --rm import-catalog --recent 5
+  #   docker compose --profile catalog run --rm import-catalog --set sv8
+  # -----------------------------------------------------------------------
+  import-catalog:
+    build: ./backend
+    profiles: ["catalog"]
+    container_name: mercadotcg-import-catalog
+    entrypoint: ["/app/import-catalog"]
+    environment:
+      DATABASE_URL: "postgres://mercadotcg:mercadotcg@db:5432/mercadotcg?sslmode=disable"
+      POKEMON_TCG_API_KEY: "${POKEMON_TCG_API_KEY:-}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  mercadotcg-pgdata:

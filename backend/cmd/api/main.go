@@ -25,12 +25,16 @@ import (
 	"github.com/gustavojucoski/mercadotcg/backend/internal/handler"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/repository/postgres"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/pricing"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/cardmarket"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ebay"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/ligapokemon"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/pokewallet"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/scraper/tcgplayer"
 	pricesvc "github.com/gustavojucoski/mercadotcg/backend/internal/service/pricing"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/service/pricesignal"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/upload"
 )
 
 func main() {
@@ -64,6 +68,7 @@ func main() {
 	userRepo := postgres.NewUserRepo(pool)
 	tokenRepo := postgres.NewTokenRepo(pool)
 	storeMemberRepo := postgres.NewStoreMemberRepo(pool)
+	storeAuditRepo := postgres.NewStoreAuditRepo(pool)
 
 	// ---- Serviços ---------------------------------------------------------
 	bcb := forex.NewBCBProvider(15 * time.Second)
@@ -89,6 +94,12 @@ func main() {
 		auth.ServiceConfig{FrontendBaseURL: cfg.FrontendBaseURL})
 	authMw := auth.NewMiddleware(tokenSvc, storeMemberRepo)
 
+	// ---- Upload storage ---------------------------------------------------
+	localUploads, err := upload.NewLocal(cfg.UploadsDir, cfg.UploadsBaseURL)
+	if err != nil {
+		log.Fatal().Err(err).Msg("inicializar storage de uploads")
+	}
+
 	// ---- HTTP -------------------------------------------------------------
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -103,6 +114,9 @@ func main() {
 		MaxAge:           300,
 	}))
 
+	// Serve arquivos de upload em /uploads/* (dev: disco local; prod: CDN/S3 serve direto).
+	r.Handle("/uploads/*", http.StripPrefix("/uploads", localUploads.FileServer()))
+
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -110,16 +124,35 @@ func main() {
 	})
 
 	// ---- Scrapers ------------------------------------------------------------
-	// LigaPokemon: HTML scraping sem credenciais (BRL).
-	// PokéWallet: API oficial pokewallet.io — cobre TCGPlayer (USD) e Cardmarket (EUR).
-	//   Uma chamada por carta, retornada para ambas as fontes via cache interno.
-	// eBay: vendas gradeadas via Scrydex; ExternalID = pokemontcg.io card ID (USD).
+	// LigaPokemon: HTML scraping sem credenciais (BRL). Sem fallback — fonte única.
+	// PokéWallet: pokewallet.io — cobre TCGPlayer (USD) e Cardmarket (EUR) via uma
+	//   única chamada HTTP por carta (cache interno de 60s). Free tier: 100 req/hora.
+	// Legados como fallback: tcgplayer/ (mpapi sem credenciais) e cardmarket/
+	//   (HTML scraping, opcionalmente via FlareSolverr). Ficam inativos quando o
+	//   circuito está aberto ou quando pokewallet responde normalmente.
+	// eBay: vendas gradeadas via Scrydex. Sem fallback por ora.
 	pwTCG, pwCM := pokewallet.New(cfg.PokeWalletAPIKey, 15*time.Second)
+
+	var cmLegacy scraper.Source
+	if cfg.FlareSolverrURL != "" {
+		cmLegacy = cardmarket.NewWithFlareSolverr(20*time.Second, cfg.FlareSolverrURL)
+	} else {
+		cmLegacy = cardmarket.New(20 * time.Second)
+	}
+	tcgLegacy := tcgplayer.New(15 * time.Second)
+
+	registry := scraper.NewRegistry()
+	// Cardmarket: pokewallet primário (3 falhas → fallback), legado com 5 falhas → circuito abre.
+	registry.Register(pricing.SourceCardmarket, pwCM, scraper.PrimarySource, 3)
+	registry.Register(pricing.SourceCardmarket, cmLegacy, scraper.FallbackSource, 5)
+	// TCGPlayer: pokewallet primário, legado mpapi como fallback.
+	registry.Register(pricing.SourceTCGPlayer, pwTCG, scraper.PrimarySource, 3)
+	registry.Register(pricing.SourceTCGPlayer, tcgLegacy, scraper.FallbackSource, 5)
 
 	scrapers := []scraper.Source{
 		ligapokemon.New(12 * time.Second),
-		pwTCG,
-		pwCM,
+		registry.ForSource(pricing.SourceCardmarket),
+		registry.ForSource(pricing.SourceTCGPlayer),
 		ebay.New(12 * time.Second),
 	}
 
@@ -129,13 +162,23 @@ func main() {
 			FrontendBaseURL: cfg.FrontendBaseURL,
 		}).Routes(r)
 
-		handler.NewAdminHandler(userRepo, storeRepo, storeMemberRepo, authMw).Routes(r)
+		handler.NewAdminHandler(userRepo, storeRepo, storeMemberRepo, storeAuditRepo, authMw, localUploads).Routes(r)
 
 		handler.NewCardHandler(cardRepo, signalSvc).Routes(r)
 
 		// Rotas de loja: leitura pública, escrita requer membro com stock_manager+.
-		storeH := handler.NewStoreHandler(storeRepo, stockRepo, signalSvc)
+		storeH := handler.NewStoreHandler(storeRepo, stockRepo, cardRepo, signalSvc, storeMemberRepo, storeAuditRepo, localUploads, userRepo)
 		storeH.Routes(r)
+		r.With(authMw.RequireAuth).Get("/stores/me", storeH.ListMyStores)
+		r.With(authMw.RequireAuth).Get("/stores/{id}/my-role", storeH.GetMyRole)
+		r.With(authMw.RequireStoreRole(user.StoreRoleViewer)).Get("/stores/{id}/members", storeH.StoreListMembers)
+		r.With(authMw.RequireStoreRole(user.StoreRoleAdmin)).Post("/stores/{id}/members", storeH.StoreAddMember)
+		r.With(authMw.RequireStoreRole(user.StoreRoleAdmin)).Delete("/stores/{id}/members/{userId}", storeH.StoreRemoveMember)
+		r.With(authMw.RequireStoreRole(user.StoreRoleAdmin)).Patch("/stores/{id}/members/{userId}/role", storeH.StoreUpdateMemberRole)
+		r.With(authMw.RequireStoreRole(user.StoreRoleAdmin)).
+			Patch("/stores/{id}/profile", storeH.UpdateProfile)
+		r.With(authMw.RequireStoreRole(user.StoreRoleAdmin)).
+			Post("/stores/{id}/logo", storeH.UploadLogo)
 		r.With(authMw.RequireStoreRole(user.StoreRoleStockManager)).
 			Post("/stores/{id}/stock/purchase", storeH.RegisterPurchase)
 		r.With(authMw.RequireStoreRole(user.StoreRoleStockManager)).

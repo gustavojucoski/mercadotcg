@@ -33,6 +33,10 @@ type Config struct {
 	ResendAPIKey     string
 	EmailFromAddress string // ex: "noreply@mercadotcg.com.br"
 
+	// Upload de arquivos.
+	UploadsDir     string // diretório local de uploads (dev)
+	UploadsBaseURL string // URL pública base, ex: "http://localhost:8080/uploads"
+
 	// Credenciais de fontes externas. Todas opcionais — se vazias, o scraper
 	// correspondente devolve scraper.ErrNotConfigured e o handler segue o
 	// fan-out sem essa fonte.
@@ -83,6 +87,10 @@ func Load() (Config, error) {
 	// Email.
 	cfg.ResendAPIKey = os.Getenv("RESEND_API_KEY")
 	cfg.EmailFromAddress = getOr("EMAIL_FROM_ADDRESS", "noreply@mercadotcg.com.br")
+
+	// Uploads.
+	cfg.UploadsDir = getOr("UPLOADS_DIR", "./uploads")
+	cfg.UploadsBaseURL = getOr("UPLOADS_BASE_URL", "http://localhost:8080/uploads")
 
 	// Credenciais externas — todas opcionais.
 	cfg.TCGPlayerPublicKey = os.Getenv("TCGPLAYER_PUBLIC_KEY")

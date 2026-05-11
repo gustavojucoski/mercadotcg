@@ -19,10 +19,11 @@ Se der erro de pipe (`open //./pipe/dockerDesktopLinuxEngine: ...`), abra o Dock
 
 ### A.2. Subir tudo (1 comando)
 
-Na pasta `backend/` do projeto:
+Na **raiz** do projeto (`MercadoTCG/`, não dentro de `backend/`):
 
 ```powershell
-cd C:\Users\gusta\OneDrive\Documentos\Claude\Projects\MercadoTCG\backend
+cd C:\Users\gusta\OneDrive\Documentos\Claude\Projects\MercadoTCG
+copy .env.example .env   # edite e preencha JWT_SECRET no mínimo
 docker compose up --build
 ```
 
@@ -63,9 +64,12 @@ docker compose logs seed
 
 ### A.4. Comandos do dia a dia
 
+Todos os comandos abaixo devem ser rodados na **raiz** do projeto (`MercadoTCG/`).
+
 | Quero | Comando |
 |---|---|
 | Ver logs da API | `docker compose logs -f api` |
+| Ver logs do frontend | `docker compose logs -f frontend` |
 | Subir só o banco (sem rebuild) | `docker compose up -d db adminer` |
 | Reaplicar migrations | `docker compose run --rm migrate /app/migrate up` |
 | Reverter 1 migration | `docker compose run --rm migrate /app/migrate down 1` |
@@ -73,6 +77,7 @@ docker compose logs seed
 | Parar tudo (mantém dados) | `docker compose down` |
 | Parar e zerar o banco | `docker compose down -v` |
 | Rebuildar após mudar código Go | `docker compose up --build api` |
+| Rebuildar após mudar frontend | `docker compose up --build frontend` |
 
 ### A.5. Acessar o banco visualmente
 
@@ -98,8 +103,13 @@ Mais rápido pra desenvolvimento iterativo (não precisa rebuildar imagem a cada
 ### B.2. Passos
 
 ```powershell
-cd C:\Users\gusta\OneDrive\Documentos\Claude\Projects\MercadoTCG\backend
-copy .env.example .env
+cd C:\Users\gusta\OneDrive\Documentos\Claude\Projects\MercadoTCG
+
+# Copia as variáveis de ambiente
+copy .env.example .env   # ajuste JWT_SECRET e DATABASE_URL (aponte para localhost:5432)
+
+# Entre no backend para rodar os comandos Go
+cd backend
 
 # Sobe só o Postgres + Adminer
 docker compose up -d db adminer

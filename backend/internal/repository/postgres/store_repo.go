@@ -27,10 +27,18 @@ func NewStoreRepo(pool *pgxpool.Pool) *StoreRepo {
 const insertStoreSQL = `
 INSERT INTO stores (
     owner_id, name, slug, description, logo_url, is_active,
-    document_type, document_number, document_status, legal_name
+    document_type, document_number, document_status, legal_name,
+    trade_name, phone,
+    address_zip, address_street, address_number, address_complement,
+    address_neighborhood, address_city, address_state, address_country
 )
-VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6,
-        $7::document_type, $8, COALESCE($9::document_status, 'pending'::document_status), $10)
+VALUES (
+    $1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6,
+    $7::document_type, $8, COALESCE($9::document_status, 'pending'::document_status), NULLIF($10, ''),
+    NULLIF($11, ''), NULLIF($12, ''),
+    NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
+    NULLIF($17, ''), NULLIF($18, ''), NULLIF($19, ''), COALESCE(NULLIF($20, ''), 'BR')
+)
 RETURNING id, document_status, created_at, updated_at`
 
 // Create insere uma loja e devolve o ID gerado.
@@ -45,11 +53,17 @@ func (r *StoreRepo) Create(ctx context.Context, s *store.Store) error {
 	err := r.pool.QueryRow(ctx, insertStoreSQL,
 		s.OwnerID, s.Name, s.Slug, s.Description, s.LogoURL, s.IsActive,
 		(*string)(s.DocumentType), s.DocumentNumber, docStatusArg, s.LegalName,
+		s.TradeName, s.Phone,
+		s.AddressZip, s.AddressStreet, s.AddressNumber, s.AddressComplement,
+		s.AddressNeighborhood, s.AddressCity, s.AddressState, s.AddressCountry,
 	).Scan(&s.ID, &docStatus, &s.CreatedAt, &s.UpdatedAt)
 
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == PgUniqueViolation {
+			if pgErr.ConstraintName == "idx_stores_document" {
+				return ErrDocumentAlreadyExists
+			}
 			return ErrAlreadyExists
 		}
 		return fmt.Errorf("insert store: %w", err)
@@ -64,6 +78,11 @@ const selectStoreCols = `
     COALESCE(description, ''), COALESCE(logo_url, ''), is_active,
     document_type, document_number, document_status, legal_name,
     document_verified_at, document_verified_by,
+    COALESCE(trade_name, ''), COALESCE(phone, ''),
+    COALESCE(address_zip, ''), COALESCE(address_street, ''),
+    COALESCE(address_number, ''), COALESCE(address_complement, ''),
+    COALESCE(address_neighborhood, ''), COALESCE(address_city, ''),
+    COALESCE(address_state, ''), COALESCE(address_country, 'BR'),
     created_at, updated_at`
 
 const selectStoreByIDSQL = `SELECT` + selectStoreCols + ` FROM stores WHERE id = $1`
@@ -109,20 +128,37 @@ UPDATE stores SET
     description = NULLIF($4, ''),
     logo_url = NULLIF($5, ''),
     is_active = $6,
-    legal_name = $7,
+    legal_name = NULLIF($7, ''),
     document_type = $8::document_type,
     document_number = $9,
     document_status = $10::document_status,
+    trade_name = NULLIF($11, ''),
+    phone = NULLIF($12, ''),
+    address_zip = NULLIF($13, ''),
+    address_street = NULLIF($14, ''),
+    address_number = NULLIF($15, ''),
+    address_complement = NULLIF($16, ''),
+    address_neighborhood = NULLIF($17, ''),
+    address_city = NULLIF($18, ''),
+    address_state = NULLIF($19, ''),
+    address_country = COALESCE(NULLIF($20, ''), 'BR'),
     updated_at = NOW()
 WHERE id = $1
 RETURNING updated_at`
 
 // Update persiste alterações básicas de uma loja (sem tocar em verified_at/by).
 func (r *StoreRepo) Update(ctx context.Context, s *store.Store) error {
+	var legalName *string
+	if s.LegalName != nil {
+		legalName = s.LegalName
+	}
 	return r.pool.QueryRow(ctx, updateStoreSQL,
 		s.ID, s.Name, s.Slug, s.Description, s.LogoURL, s.IsActive,
-		s.LegalName, (*string)(s.DocumentType), s.DocumentNumber,
+		legalName, (*string)(s.DocumentType), s.DocumentNumber,
 		string(s.DocumentStatus),
+		s.TradeName, s.Phone,
+		s.AddressZip, s.AddressStreet, s.AddressNumber, s.AddressComplement,
+		s.AddressNeighborhood, s.AddressCity, s.AddressState, s.AddressCountry,
 	).Scan(&s.UpdatedAt)
 }
 
@@ -170,6 +206,11 @@ func scanStoreRow(row interface {
 		&s.Description, &s.LogoURL, &s.IsActive,
 		&docType, &s.DocumentNumber, &docStatus, &s.LegalName,
 		&docVerifiedAt, &docVerifiedBy,
+		&s.TradeName, &s.Phone,
+		&s.AddressZip, &s.AddressStreet,
+		&s.AddressNumber, &s.AddressComplement,
+		&s.AddressNeighborhood, &s.AddressCity,
+		&s.AddressState, &s.AddressCountry,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if err != nil {
@@ -193,6 +234,33 @@ func (r *StoreRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]store
 	rows, err := r.pool.Query(ctx, listStoresByOwnerSQL, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("list stores: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.Store
+	for rows.Next() {
+		s, err := scanStoreRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan store: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// listStoresByMemberSQL returns stores where the user is either the owner
+// or has an explicit store_members row. UNION deduplicates when both apply.
+const listStoresByMemberSQL = `SELECT` + selectStoreCols + `
+FROM stores
+WHERE owner_id = $1
+   OR id IN (SELECT store_id FROM store_members WHERE user_id = $1)
+ORDER BY created_at ASC`
+
+// ListByMember returns all stores the user owns or is a member of.
+func (r *StoreRepo) ListByMember(ctx context.Context, userID uuid.UUID) ([]store.Store, error) {
+	rows, err := r.pool.Query(ctx, listStoresByMemberSQL, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list stores by member: %w", err)
 	}
 	defer rows.Close()
 
