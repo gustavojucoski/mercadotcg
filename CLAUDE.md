@@ -27,6 +27,7 @@ Este projeto possui agentes especializados. **Sempre delegue a tarefa ao agente 
 6. PR          → abrir Pull Request da branch para main
 7. Revisão     → Claude principal revisa a PR antes de aprovar
 8. Merge       → squash merge para main após aprovação
+9. Docs        → atualizar CLAUDE.md no main: migrations, ADRs, fase, estrutura, convenções e próximos passos
 ```
 
 **Regras absolutas:**
@@ -34,6 +35,7 @@ Este projeto possui agentes especializados. **Sempre delegue a tarefa ao agente 
 - **Todo código vai para uma branch.** Nunca commitar diretamente em `main`.
 - **Toda pesquisa técnica** (bibliotecas, APIs externas, padrões, viabilidade) é feita pelo `senior-software-architect`.
 - **QA é obrigatório** após cada entrega dos agentes de código. O Claude principal spawna o QA automaticamente, sem precisar o usuário solicitar.
+- **Docs são obrigatórios após cada merge.** O Claude principal atualiza o CLAUDE.md imediatamente após o squash merge, sem precisar o usuário solicitar. O que atualizar: tabela de migrations (se houver), ADRs novos ou alterados, fase atual, estrutura de diretórios (arquivos novos), convenções novas e próximos passos.
 - Tarefas puramente de **leitura/análise** (explicar código, responder perguntas) podem ser feitas inline pelo Claude principal.
 - Para mudanças que tocam **ambas as camadas** (backend + frontend), spawne os agentes de código em paralelo após o Arquiteto definir o plano.
 - Se um agente precisar de contexto de sessão anterior, inclua no prompt os tipos, interfaces e convenções relevantes.
