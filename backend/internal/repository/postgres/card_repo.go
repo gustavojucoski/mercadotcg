@@ -259,10 +259,14 @@ UPDATE cards SET image_small_url = $2, image_large_url = $3 WHERE id = $1`
 
 // UpdateCardImages atualiza as URLs de imagem de uma carta.
 // Usado pelo import-catalog após baixar imagens localmente.
-func (r *CardRepo) UpdateCardImages(ctx context.Context, cardID, smallURL, largeURL string) error {
-	_, err := r.pool.Exec(ctx, updateCardImagesSQL, cardID, smallURL, largeURL)
+// Retorna ErrNotFound se o cardID não existir no banco.
+func (r *CardRepo) UpdateCardImages(ctx context.Context, cardID uuid.UUID, smallURL, largeURL string) error {
+	tag, err := r.pool.Exec(ctx, updateCardImagesSQL, cardID, smallURL, largeURL)
 	if err != nil {
 		return fmt.Errorf("update card images: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

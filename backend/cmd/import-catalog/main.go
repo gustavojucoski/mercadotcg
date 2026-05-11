@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -120,12 +121,17 @@ func main() {
 
 	// Canal para jobs de download de imagem (buffer = 200 para não bloquear o loop principal).
 	type imgJob struct {
-		cardID   string
+		cardID   uuid.UUID
 		setID    string
 		smallURL string
 		largeURL string
 	}
 	imgJobs := make(chan imgJob, 200)
+
+	// workerCtx é independente do ctx principal (que tem deadline de 60min para
+	// importação de sets). Downloads de imagem podem durar mais — e não devem ser
+	// cancelados só porque o loop de sets chegou perto do timeout.
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 
 	// Worker pool de imagens: só inicia se --download-images.
 	var wg sync.WaitGroup
@@ -137,13 +143,14 @@ func main() {
 				defer wg.Done()
 				imgHTTP := &http.Client{Timeout: 30 * time.Second}
 				for job := range imgJobs {
-					newSmall, newLarge, err := downloadAndStore(ctx, imgHTTP, uploadProvider, repo, job.cardID, job.setID, job.smallURL, job.largeURL)
+					cardIDStr := job.cardID.String()
+					newSmall, newLarge, err := downloadAndStore(workerCtx, imgHTTP, uploadProvider, repo, cardIDStr, job.setID, job.smallURL, job.largeURL)
 					if err != nil {
-						log.Warn().Err(err).Str("card_id", job.cardID).Msg("download imagem falhou")
+						log.Warn().Err(err).Str("card_id", cardIDStr).Msg("download imagem falhou")
 						continue
 					}
-					if err := repo.UpdateCardImages(ctx, job.cardID, newSmall, newLarge); err != nil {
-						log.Warn().Err(err).Str("card_id", job.cardID).Msg("UpdateCardImages falhou")
+					if err := repo.UpdateCardImages(workerCtx, job.cardID, newSmall, newLarge); err != nil {
+						log.Warn().Err(err).Str("card_id", cardIDStr).Msg("UpdateCardImages falhou")
 					}
 				}
 			}()
@@ -186,7 +193,7 @@ func main() {
 			}
 			inserted++
 
-			if *downloadImages && cardID != "" {
+			if *downloadImages && cardID != (uuid.UUID{}) {
 				imgJobs <- imgJob{
 					cardID:   cardID,
 					setID:    s.ID,
@@ -202,9 +209,10 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// Sinaliza workers de imagem que não há mais jobs.
+	// Sinaliza workers de imagem que não há mais jobs e aguarda conclusão.
 	close(imgJobs)
 	wg.Wait()
+	workerCancel() // libera o contexto dos workers após todos terminarem
 
 	log.Info().Msgf("==> Concluído: %d sets novos, %d sets já existiam, %d cards novos",
 		imported, skipped, cardsTotal)
@@ -238,13 +246,22 @@ func upsertSet(ctx context.Context, repo *postgres.CardRepo, s pokemontcgio.SetI
 		ImageURL:    s.LogoURL,
 	}
 	if err := repo.CreateSet(ctx, &dbSet); err != nil {
+		// Race condition: outro processo inseriu o set entre o GetSetByCode e o CreateSet.
+		// Busca o existente para devolver um set com ID válido.
+		if errors.Is(err, postgres.ErrAlreadyExists) {
+			existing, lookupErr := repo.GetSetByCode(ctx, s.ID)
+			if lookupErr != nil {
+				return card.Set{}, fmt.Errorf("upsertSet get existing after race: %w", lookupErr)
+			}
+			return existing, postgres.ErrAlreadyExists
+		}
 		return card.Set{}, fmt.Errorf("create set: %w", err)
 	}
 	return dbSet, nil
 }
 
 // upsertCard cria uma carta e suas variantes de acordo com as regras.
-// Retorna o ID interno da carta (string UUID) para uso no download de imagens.
+// Retorna o ID interno da carta (uuid.UUID) para uso no download de imagens.
 // Retorna ErrAlreadyExists se a carta já existia.
 func upsertCard(
 	ctx context.Context,
@@ -253,7 +270,7 @@ func upsertCard(
 	s pokemontcgio.SetInfo,
 	c pokemontcgio.CatalogCard,
 	rules RuleMap,
-) (cardID string, err error) {
+) (cardID uuid.UUID, err error) {
 	isPromo := strings.EqualFold(c.Rarity, "Promo")
 
 	dbCard := card.Card{
@@ -273,7 +290,7 @@ func upsertCard(
 		},
 	}
 	if err := repo.CreateCard(ctx, &dbCard); err != nil {
-		return "", err
+		return uuid.UUID{}, err
 	}
 
 	// Resolve os finishes usando as regras.
@@ -314,7 +331,7 @@ func upsertCard(
 		}
 	}
 
-	return dbCard.ID.String(), nil
+	return dbCard.ID, nil
 }
 
 // ----------------------------------------------------------------------------
@@ -344,6 +361,8 @@ func downloadAndStore(
 
 // downloadOne baixa uma imagem e a armazena via provider.
 // A chave no provider é "cards/{setID}/{filename}.{ext}".
+// Se o arquivo já existir no disco, pula o download e retorna a URL existente
+// (idempotência em re-runs com --download-images).
 func downloadOne(
 	ctx context.Context,
 	imgHTTP *http.Client,
@@ -359,6 +378,13 @@ func downloadOne(
 		ext = ".png"
 	}
 	key := fmt.Sprintf("cards/%s/%s%s", setID, filename, ext)
+
+	// Idempotência: se o arquivo já existe no disco, retorna a URL pública sem
+	// fazer nenhuma requisição HTTP — preserva rate limit em re-runs.
+	destPath := filepath.Join(provider.Root(), filepath.FromSlash(key))
+	if _, err := os.Stat(destPath); err == nil {
+		return provider.PublicURL(key), nil
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srcURL, nil)
 	if err != nil {
