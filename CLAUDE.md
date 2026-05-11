@@ -81,7 +81,7 @@ MercadoTCG/
 │   │   ├── api/            # servidor HTTP principal
 │   │   ├── migrate/        # CLI: up | down [N] | version | force <v>  — lê DATABASE_URL direto
 │   │   ├── seed/           # popula demo data — lê DATABASE_URL direto (sem config.Load)
-│   │   └── import-catalog/ # importa catálogo da pokemontcg.io API
+│   │   └── import-catalog/ # importa catálogo da pokemontcg.io API; lê DATABASE_URL direto (sem config.Load); variant_rules.json define finishes por era/rarity; flag --download-images
 │   ├── internal/
 │   │   ├── domain/
 │   │   │   ├── card/       # Set, Card, Variant, Finish enum
@@ -133,7 +133,7 @@ MercadoTCG/
 │   │   │   ├── ebay/           # Scrydex scraper (graded sales)
 │   │   │   ├── tcgplayer/      # legado — não registrado no main.go
 │   │   │   └── cardmarket/     # legado (FlareSolverr) — não registrado no main.go
-│   │   ├── pokemontcgio/   # client pokemontcg.io: CardInfo com TCGPlayer/Cardmarket prices
+│   │   ├── pokemontcgio/   # client pokemontcg.io: FindCard (preços), ListSets, ListCardsBySet, requestWithRetry (catálogo)
 │   │   └── forex/          # BCBProvider (PTAX OData), Service com cache+fallback 7 dias
 │   └── migrations/
 │       ├── 000001 — extensions (pgcrypto, citext, pg_trgm)
@@ -268,6 +268,12 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 **Dev:** O `verify_url` é sempre logado no stdout da API (`[dev] link de verificação`) para facilitar testes sem depender de entrega de email.
 **Email prod:** Requer domínio verificado no Resend. Sem domínio verificado, `onboarding@resend.dev` só entrega para o email do dono da conta Resend.
 
+### ADR-021 — `tcg` como VARCHAR(32) com CHECK constraint em `card_sets`
+**Decisão:** A coluna `tcg` em `card_sets` é `VARCHAR(32) NOT NULL DEFAULT 'pokemon'` com CHECK constraint explícita (`'pokemon', 'magic', 'yugioh', 'onepiece', 'lorcana', 'fab'`) em vez de ENUM nativo do Postgres.
+**Razão:** O roadmap multi-TCG prevê adição orgânica de novos jogos. ENUM nativo exige `ALTER TYPE` com possível lock de tabela em tabela populada; `DROP/ADD CONSTRAINT` é mais simples. pgx/v5 não exige cast explícito para VARCHAR, eliminando o gotcha de ADR-018.
+**Trade-off aceito:** Sem validação no nível de tipo Go — usar constantes exportadas no domain para evitar typos.
+**Revisão:** Se o número de TCGs ultrapassar 10 e a CHECK constraint virar ruído, remover constraint e confiar na camada de aplicação, ou migrar para tabela de lookup `tcg_games`.
+
 ### ADR-019 — Navegação via hover dropdowns no SiteHeader
 **Decisão:** "Minha Loja" e "Admin" são botões com hover dropdown no `SiteHeader`. "Admin" expande para "Busca Externa" e "Lojas". "Minha Loja" expande para as abas da loja corrente (Perfil, Membros, Selados, Singles) quando o pathname está em `/lojas/{id}/*`, ou para "Ir para minha loja" caso contrário. O `UserMenu` serve apenas para ações do usuário (conta, logout).
 **Razão:** Dropdowns contextuais permitem navegar entre páginas da loja e retornar ao app global sem depender do botão voltar do browser.
@@ -277,9 +283,9 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 
 ## 5. Status Atual
 
-**Fase:** Auth completo + gestão de lojas com validação de documento.
+**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação de Pokémon TCG.
 
-### Migrations (000001–000010)
+### Migrations (000001–000012)
 
 | # | Conteúdo |
 |---|---|
@@ -293,6 +299,7 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 | 000008 | `stores` + colunas `document_type`, `document_number`, `document_status`, `legal_name`, `document_verified_at`, `document_verified_by`; índice unique parcial |
 | 000009 | `stores` + colunas de endereço (address_zip … address_country) separadas em migration dedicada |
 | 000010 | `store_audit_log` — id, store_id, changed_by, change_type, changes (JSONB), created_at; índice em (store_id, created_at DESC) |
+| 000012 | `card_sets` + coluna `tcg VARCHAR(32) NOT NULL DEFAULT 'pokemon'` + CHECK constraint + índice (ADR-021) |
 
 ### Endpoints HTTP disponíveis
 
@@ -387,13 +394,14 @@ GET  /api/v1/variants/{id}/signal
 
 ## 6. Próximos Passos (priorizados)
 
-1. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso o `pricesignal` fica com dados do seed e nunca atualiza com preços reais dos scrapers.
-2. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`. Hoje os refs são inseridos manualmente pelo seed.
-3. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
-4. **Frontend estoque de singles** — `/lojas/[id]/singles` com cadastro de cards. Suporte multi-TCG desde o início: o formulário de seleção de carta não pode ser Pokémon-only; modelar de forma genérica (TCG + set + número/ID de carta).
-5. **Frontend estoque de selados** — `/lojas/[id]/selados` com cadastro de produtos selados (booster box, ETB, etc.).
-6. **Testes integrados** — `tests/integration` com `testcontainers-go` para repos críticos: `StockRepo` (transações, custo médio ponderado), `PriceDailyRepo.RebuildDay`, `forex.Service` com fake Provider.
-7. **Marketplace público** — listings, reservas e checkout. Entra integração de pagamentos (seção 9).
+1. **Rodar importação completa do catálogo** — `DATABASE_URL=... go run ./cmd/import-catalog` (ou com `POKEMON_TCG_API_KEY` para 20k req/dia). Popula `card_sets`, `cards` e `card_variants` com dados reais de todos os sets de Pokémon TCG.
+2. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso o `pricesignal` fica com dados do seed e nunca atualiza com preços reais dos scrapers.
+3. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`. Hoje os refs são inseridos manualmente pelo seed.
+4. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
+5. **Frontend estoque de singles** — `/lojas/[id]/singles` com cadastro de cards. O catálogo agora está populado via `import-catalog`; usar `GET /api/v1/cards/search` para seleção de carta. Suporte multi-TCG desde o início: campo `tcg` + set + número.
+6. **Frontend estoque de selados** — `/lojas/[id]/selados` com cadastro de produtos selados (booster box, ETB, etc.).
+7. **Testes integrados** — `tests/integration` com `testcontainers-go` para repos críticos: `StockRepo` (transações, custo médio ponderado), `PriceDailyRepo.RebuildDay`, `forex.Service` com fake Provider.
+8. **Marketplace público** — listings, reservas e checkout. Entra integração de pagamentos (seção 9).
 
 ## 7. Convenções
 
@@ -402,7 +410,7 @@ GET  /api/v1/variants/{id}/signal
 - **SQL**: snake_case. ENUMs no plural natural. Toda alteração de ENUM = nova migration. Nunca editar migration já aplicada.
 - **pgx/v5 + ENUMs customizados**: sempre usar cast explícito no SQL (`$n::nome_do_enum`). pgx não faz auto-cast de `string` para ENUM Postgres.
 - **Frontend**: App Router. Server component por padrão; `"use client"` só quando há estado/eventos/hooks. Auth guard centralizado em `app/admin/layout.tsx` — páginas filhas não duplicam o guard. `NEXT_PUBLIC_API_URL` via `.env.local`.
-- **Docker**: `cmd/migrate` e `cmd/seed` leem `DATABASE_URL` diretamente — **não usam `config.Load()`** (que exigiria JWT_SECRET e outras vars de auth desnecessárias nesses binários).
+- **Docker**: `cmd/migrate`, `cmd/seed` e `cmd/import-catalog` leem `DATABASE_URL` diretamente — **não usam `config.Load()`** (que exigiria JWT_SECRET e outras vars de auth desnecessárias nesses binários).
 - **Multi-TCG**: o sistema deve suportar qualquer TCG (não só Pokémon). Ao implementar qualquer feature de catálogo de cartas ou estoque de singles, modelar de forma agnóstica ao TCG (campo `tcg` ou similar). Não assumir Pokémon como padrão hard-coded.
 
 ## 8. O que NÃO está pronto
