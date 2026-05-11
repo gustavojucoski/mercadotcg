@@ -144,7 +144,7 @@ func main() {
 				imgHTTP := &http.Client{Timeout: 30 * time.Second}
 				for job := range imgJobs {
 					cardIDStr := job.cardID.String()
-					newSmall, newLarge, err := downloadAndStore(workerCtx, imgHTTP, uploadProvider, repo, cardIDStr, job.setID, job.smallURL, job.largeURL)
+					newSmall, newLarge, err := downloadAndStore(workerCtx, imgHTTP, uploadProvider, cardIDStr, job.setID, job.smallURL, job.largeURL)
 					if err != nil {
 						log.Warn().Err(err).Str("card_id", cardIDStr).Msg("download imagem falhou")
 						continue
@@ -345,7 +345,6 @@ func downloadAndStore(
 	ctx context.Context,
 	imgHTTP *http.Client,
 	provider *upload.LocalProvider,
-	_ *postgres.CardRepo,
 	cardID, setID, smallURL, largeURL string,
 ) (newSmall, newLarge string, err error) {
 	newSmall, err = downloadOne(ctx, imgHTTP, provider, setID, cardID+"_small", smallURL)
