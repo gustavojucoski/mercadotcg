@@ -225,6 +225,17 @@ func main() {
 // upsertSet garante que o set existe no banco. Retorna o set (existente ou novo)
 // e ErrAlreadyExists se já existia (para contabilização), ou nil se foi criado.
 func upsertSet(ctx context.Context, repo *postgres.CardRepo, s pokemontcgio.SetInfo) (card.Set, error) {
+	// Upsert da série primeiro, para ter o series_id disponível.
+	var seriesID *uuid.UUID
+	if s.Series != "" {
+		tcg := "pokemon"
+		ser, err := repo.UpsertSeries(ctx, s.Series, tcg)
+		if err != nil {
+			return card.Set{}, fmt.Errorf("upsert series: %w", err)
+		}
+		seriesID = &ser.ID
+	}
+
 	existing, err := repo.GetSetByCode(ctx, s.ID)
 	if err == nil {
 		// Set já existe — retorna com ErrAlreadyExists para o caller contabilizar.
@@ -239,6 +250,7 @@ func upsertSet(ctx context.Context, repo *postgres.CardRepo, s pokemontcgio.SetI
 		Code:        s.ID,
 		Name:        s.Name,
 		Series:      s.Series,
+		SeriesID:    seriesID,
 		TCG:         "pokemon",
 		Language:    card.LanguageEnglish,
 		ReleaseDate: releaseDate,
@@ -260,6 +272,19 @@ func upsertSet(ctx context.Context, repo *postgres.CardRepo, s pokemontcgio.SetI
 	return dbSet, nil
 }
 
+// buildCollectorNumber formata o número de colecionador como "number/printedTotal".
+// Se printedTotal <= 0 ou number não for inteiro puro (ex.: "SWSH001", "TG01"),
+// devolve number sem alteração.
+func buildCollectorNumber(number string, printedTotal int) string {
+	if printedTotal <= 0 {
+		return number
+	}
+	if _, err := strconv.Atoi(number); err != nil {
+		return number // alfanumérico: "SWSH001", "TG01", etc.
+	}
+	return fmt.Sprintf("%s/%d", number, printedTotal)
+}
+
 // upsertCard cria uma carta e suas variantes de acordo com as regras.
 // Retorna o ID interno da carta (uuid.UUID) para uso no download de imagens.
 // Retorna ErrAlreadyExists se a carta já existia.
@@ -274,17 +299,18 @@ func upsertCard(
 	isPromo := strings.EqualFold(c.Rarity, "Promo")
 
 	dbCard := card.Card{
-		SetID:         dbSet.ID,
-		Number:        c.Number,
-		Name:          c.Name,
-		Rarity:        c.Rarity,
-		Supertype:     c.Supertype,
-		Subtypes:      c.Subtypes,
-		Types:         c.Types,
-		HP:            atoiOrZero(c.HP),
-		Illustrator:   c.Artist,
-		ImageSmallURL: c.SmallURL,
-		ImageLargeURL: c.LargeURL,
+		SetID:           dbSet.ID,
+		Number:          c.Number,
+		CollectorNumber: buildCollectorNumber(c.Number, s.PrintedTotal),
+		Name:            c.Name,
+		Rarity:          c.Rarity,
+		Supertype:       c.Supertype,
+		Subtypes:        c.Subtypes,
+		Types:           c.Types,
+		HP:              atoiOrZero(c.HP),
+		Illustrator:     c.Artist,
+		ImageSmallURL:   c.SmallURL,
+		ImageLargeURL:   c.LargeURL,
 		ExternalIDs: map[string]string{
 			"pokemon_tcg_io": c.ID,
 		},
