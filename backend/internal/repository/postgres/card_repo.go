@@ -13,6 +13,33 @@ import (
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/card"
 )
 
+// SetWithSeries junta um Set com os nomes da sua série (EN e PT-BR).
+// Usado na listagem pública de sets para exibir o agrupamento por série.
+type SetWithSeries struct {
+	card.Set
+	SeriesName   string `json:"series"`
+	SeriesNamePT string `json:"series_pt"`
+}
+
+// CardWithVariants junta uma Card com todas as suas variantes.
+// Usado na listagem de cartas de um set para evitar N+1 queries de variantes.
+type CardWithVariants struct {
+	card.Card
+	Variants []card.Variant `json:"variants"`
+}
+
+// AutocompleteResult é o payload minimalista para a sugestão de busca rápida.
+type AutocompleteResult struct {
+	ID              uuid.UUID `json:"id"`
+	Name            string    `json:"name"`
+	NamePT          string    `json:"name_pt,omitempty"`
+	CollectorNumber string    `json:"collector_number"`
+	SetCode         string    `json:"set_code"`
+	SetName         string    `json:"set_name"`
+	ImageSmallURL   string    `json:"image_small_url,omitempty"`
+	Slug            string    `json:"slug"` // "{set_code}-{collector_number}"
+}
+
 // CardRepo persiste e consulta sets, cards e variantes.
 // Mantemos os três numa única struct porque as queries são pequenas e quase
 // sempre cruzam essas três tabelas.
@@ -494,6 +521,281 @@ func (r *CardRepo) ListVariantsByCard(ctx context.Context, cardID uuid.UUID) ([]
 		}
 		v.Finish = card.Finish(finish)
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ----------------------------------------------------------------------------
+// Public catalog — sets, cards, autocomplete
+// ----------------------------------------------------------------------------
+
+const listSetsByTCGSQL = `
+SELECT cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''),
+       cs.series_id,
+       COALESCE(cr.name, cs.series, '') AS series_name,
+       COALESCE(cr.name_pt, '') AS series_name_pt,
+       COALESCE(cs.tcg, 'pokemon') AS tcg,
+       cs.language, cs.release_date, COALESCE(cs.total_cards, 0),
+       COALESCE(cs.image_url, cs.logo_url, '') AS image_url,
+       cs.created_at, cs.updated_at,
+       COUNT(*) OVER() AS total
+FROM card_sets cs
+LEFT JOIN card_series cr ON cr.id = cs.series_id
+WHERE cs.tcg = $1
+  AND ($2::uuid IS NULL OR cs.series_id = $2)
+ORDER BY cs.release_date DESC NULLS LAST, cs.name ASC
+LIMIT $3 OFFSET $4`
+
+// ListSetsByTCG lista sets paginados, filtrados por TCG e opcionalmente por série.
+// Retorna os sets e o total de linhas (para paginação do caller).
+func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid.UUID, page, limit int) ([]SetWithSeries, int, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * limit
+
+	rows, err := r.pool.Query(ctx, listSetsByTCGSQL, tcg, seriesID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list sets by tcg: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SetWithSeries
+	var total int
+	for rows.Next() {
+		var s SetWithSeries
+		var lang string
+		if err := rows.Scan(
+			&s.ID, &s.Code, &s.Name, &s.NamePT,
+			&s.SeriesID,
+			&s.SeriesName, &s.SeriesNamePT,
+			&s.TCG,
+			&lang, &s.ReleaseDate, &s.TotalCards,
+			&s.ImageURL, &s.CreatedAt, &s.UpdatedAt,
+			&total,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan set with series: %w", err)
+		}
+		s.Language = card.Language(lang)
+		// Expõe series no campo herdado de card.Set para retrocompatibilidade.
+		s.Series = s.SeriesName
+		s.SeriesPT = s.SeriesNamePT
+		out = append(out, s)
+	}
+	return out, total, rows.Err()
+}
+
+const listCardsBySetCodeSQL = `
+SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
+       COALESCE(c.rarity, ''), COALESCE(c.supertype, ''),
+       COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
+       COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
+       COALESCE(c.image_small_url, ''), COALESCE(c.image_large_url, ''),
+       c.external_ids, c.created_at, c.updated_at,
+       COUNT(*) OVER() AS total
+FROM cards c
+JOIN card_sets s ON s.id = c.set_id AND s.code = $1
+ORDER BY NULLIF(regexp_replace(c.collector_number, '\D', '', 'g'), '')::int NULLS LAST, c.collector_number
+LIMIT $2 OFFSET $3`
+
+const listVariantsByCardsSQL = `
+SELECT id, card_id, finish::text, COALESCE(label, ''), is_promo, COALESCE(notes, ''), created_at
+FROM card_variants
+WHERE card_id = ANY($1)
+ORDER BY card_id, finish, label`
+
+// ListCardsBySetCode lista cartas paginadas de um set, ordenadas pelo collector_number
+// numérico. Cada carta vem acompanhada de suas variantes (via segunda query batch).
+func (r *CardRepo) ListCardsBySetCode(ctx context.Context, setCode string, page, limit int) ([]CardWithVariants, int, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * limit
+
+	rows, err := r.pool.Query(ctx, listCardsBySetCodeSQL, setCode, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list cards by set: %w", err)
+	}
+	defer rows.Close()
+
+	var cards []CardWithVariants
+	var cardIDs []uuid.UUID
+	var total int
+
+	for rows.Next() {
+		var cw CardWithVariants
+		if err := rows.Scan(
+			&cw.ID, &cw.SetID, &cw.Number, &cw.CollectorNumber, &cw.Name, &cw.NamePT,
+			&cw.Rarity, &cw.Supertype, &cw.Subtypes, &cw.Types,
+			&cw.HP, &cw.Illustrator, &cw.ImageSmallURL, &cw.ImageLargeURL,
+			&cw.ExternalIDs, &cw.CreatedAt, &cw.UpdatedAt,
+			&total,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan card row: %w", err)
+		}
+		cards = append(cards, cw)
+		cardIDs = append(cardIDs, cw.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if len(cards) == 0 {
+		return []CardWithVariants{}, total, nil
+	}
+
+	// Busca as variantes de todas as cartas numa única query.
+	vrows, err := r.pool.Query(ctx, listVariantsByCardsSQL, cardIDs)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list variants batch: %w", err)
+	}
+	defer vrows.Close()
+
+	// Index por cardID para atribuir variantes às cartas corretas.
+	idx := make(map[uuid.UUID]int, len(cards))
+	for i, cw := range cards {
+		idx[cw.ID] = i
+	}
+
+	for vrows.Next() {
+		var v card.Variant
+		var finish string
+		if err := vrows.Scan(&v.ID, &v.CardID, &finish, &v.Label, &v.IsPromo, &v.Notes, &v.CreatedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan variant batch: %w", err)
+		}
+		v.Finish = card.Finish(finish)
+		if i, ok := idx[v.CardID]; ok {
+			cards[i].Variants = append(cards[i].Variants, v)
+		}
+	}
+	if err := vrows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return cards, total, nil
+}
+
+const getCardBySetAndNumberSQL = `
+SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
+       COALESCE(c.rarity, ''), COALESCE(c.supertype, ''),
+       COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
+       COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
+       COALESCE(c.image_small_url, ''), COALESCE(c.image_large_url, ''),
+       c.external_ids, c.created_at, c.updated_at,
+       s.id, s.code, s.name, COALESCE(s.name_pt, ''),
+       COALESCE(cr.name, s.series, '') AS series_name,
+       COALESCE(cr.name_pt, '') AS series_name_pt,
+       s.series_id,
+       COALESCE(s.tcg, 'pokemon'), s.language, s.release_date,
+       COALESCE(s.total_cards, 0), COALESCE(s.image_url, s.logo_url, ''),
+       s.created_at, s.updated_at
+FROM cards c
+JOIN card_sets s ON s.id = c.set_id
+LEFT JOIN card_series cr ON cr.id = s.series_id
+WHERE s.code = $1 AND c.collector_number = $2
+LIMIT 1`
+
+// GetCardBySetAndNumber busca uma carta pelo código do set e collector_number.
+// Retorna ErrNotFound quando a combinação não existe.
+func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collectorNumber string) (card.Card, card.Set, error) {
+	var c card.Card
+	var s card.Set
+	var lang string
+
+	err := r.pool.QueryRow(ctx, getCardBySetAndNumberSQL, setCode, collectorNumber).Scan(
+		&c.ID, &c.SetID, &c.Number, &c.CollectorNumber, &c.Name, &c.NamePT,
+		&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
+		&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
+		&c.ExternalIDs, &c.CreatedAt, &c.UpdatedAt,
+		&s.ID, &s.Code, &s.Name, &s.NamePT,
+		&s.Series, &s.SeriesPT, &s.SeriesID,
+		&s.TCG, &lang, &s.ReleaseDate,
+		&s.TotalCards, &s.ImageURL,
+		&s.CreatedAt, &s.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return card.Card{}, card.Set{}, ErrNotFound
+	}
+	if err != nil {
+		return card.Card{}, card.Set{}, fmt.Errorf("get card by set+number: %w", err)
+	}
+	s.Language = card.Language(lang)
+	return c, s, nil
+}
+
+// autocompleteSQL usa UNION ALL para priorizar matches de prefixo sobre matches
+// de similaridade (trgm). O UNION é necessário porque ORDER BY não pode ser
+// aplicado internamente em cada ramo antes da combinação sem subquery.
+const autocompleteSQL = `
+SELECT id, name, name_pt, collector_number, set_code, set_name, image_small_url
+FROM (
+    (
+      SELECT c.id, c.name::text AS name, COALESCE(c.name_pt, '') AS name_pt,
+             COALESCE(c.collector_number, '') AS collector_number,
+             s.code AS set_code, s.name::text AS set_name,
+             COALESCE(c.image_small_url, '') AS image_small_url,
+             1 AS priority
+      FROM cards c
+      JOIN card_sets s ON s.id = c.set_id
+      WHERE (c.name ILIKE $1 || '%' OR c.name_pt ILIKE $1 || '%')
+        AND ($3 = '' OR s.tcg = $3)
+      LIMIT $2
+    )
+    UNION ALL
+    (
+      SELECT c.id, c.name::text, COALESCE(c.name_pt, ''), COALESCE(c.collector_number, ''),
+             s.code, s.name::text,
+             COALESCE(c.image_small_url, ''),
+             2 AS priority
+      FROM cards c
+      JOIN card_sets s ON s.id = c.set_id
+      WHERE c.id NOT IN (
+          SELECT c2.id FROM cards c2
+          JOIN card_sets s2 ON s2.id = c2.set_id
+          WHERE (c2.name ILIKE $1 || '%' OR c2.name_pt ILIKE $1 || '%')
+            AND ($3 = '' OR s2.tcg = $3)
+          LIMIT $2
+      )
+      AND (c.name % $1 OR c.name_pt % $1)
+      AND ($3 = '' OR s.tcg = $3)
+      ORDER BY GREATEST(similarity(c.name::text, $1), similarity(COALESCE(c.name_pt, ''), $1)) DESC
+      LIMIT $2
+    )
+) sub
+ORDER BY priority, name
+LIMIT $2`
+
+// AutocompleteCards busca cartas para sugestão de busca rápida.
+// Prioriza matches de prefixo; usa similaridade trgm como fallback.
+// limit é capped a 20 — valores maiores são truncados no caller (handler usa 8).
+func (r *CardRepo) AutocompleteCards(ctx context.Context, q, tcg string, limit int) ([]AutocompleteResult, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 8
+	}
+
+	rows, err := r.pool.Query(ctx, autocompleteSQL, q, limit, tcg)
+	if err != nil {
+		return nil, fmt.Errorf("autocomplete cards: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AutocompleteResult
+	for rows.Next() {
+		var a AutocompleteResult
+		var priority int
+		if err := rows.Scan(
+			&a.ID, &a.Name, &a.NamePT, &a.CollectorNumber,
+			&a.SetCode, &a.SetName, &a.ImageSmallURL, &priority,
+		); err != nil {
+			return nil, fmt.Errorf("scan autocomplete row: %w", err)
+		}
+		a.Slug = fmt.Sprintf("%s-%s", a.SetCode, a.CollectorNumber)
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }
