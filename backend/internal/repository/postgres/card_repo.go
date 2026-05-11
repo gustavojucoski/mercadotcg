@@ -393,6 +393,22 @@ func (r *CardRepo) UpdateCardImages(ctx context.Context, cardID uuid.UUID, small
 	return nil
 }
 
+const updateSetImageURLSQL = `
+UPDATE card_sets SET image_url = $1, updated_at = NOW() WHERE id = $2`
+
+// UpdateSetImageURL atualiza a URL da imagem (logo) de um set.
+// Usado pelo import-catalog após baixar o logo localmente.
+func (r *CardRepo) UpdateSetImageURL(ctx context.Context, setID uuid.UUID, imageURL string) error {
+	tag, err := r.pool.Exec(ctx, updateSetImageURLSQL, imageURL, setID)
+	if err != nil {
+		return fmt.Errorf("update set image_url: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 const updateCardNamePTSQL = `
 UPDATE cards SET name_pt = $2, updated_at = now() WHERE id = $1`
 
