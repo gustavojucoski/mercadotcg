@@ -9,7 +9,7 @@ import type { NextRequest } from 'next/server'
 const AUTH_ROUTES = ['/auth/login', '/auth/register']
 const PROTECTED_ROUTES = ['/']
 
-export function proxy(request: NextRequest) {
+export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
   const sessionCookie = request.cookies.get('mtcg_session')?.value
 
