@@ -113,7 +113,7 @@ func (r *CardRepo) UpdateSetNamePT(ctx context.Context, id uuid.UUID, namePT str
 const upsertSeriesSQL = `
 INSERT INTO card_series (name, tcg)
 VALUES ($1, $2)
-ON CONFLICT (name, tcg) DO UPDATE SET name = EXCLUDED.name
+ON CONFLICT (name, tcg) DO UPDATE SET name = EXCLUDED.name -- no-op: força RETURNING a devolver a linha existente
 RETURNING id, name, COALESCE(name_pt, ''), tcg, created_at`
 
 // UpsertSeries garante que a série existe e retorna o objeto com ID.
