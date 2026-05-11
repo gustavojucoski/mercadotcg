@@ -5,17 +5,6 @@ import Link from 'next/link'
 import type { CardInSet } from '@/lib/types'
 import { CardThumbnail } from '@/components/CardThumbnail'
 
-const RARITY_OPTIONS = [
-  'Common',
-  'Uncommon',
-  'Rare',
-  'Double Rare',
-  'Ultra Rare',
-  'Illustration Rare',
-  'Special Illustration Rare',
-  'Hyper Rare',
-]
-
 interface CardGridFilterProps {
   cards: CardInSet[]
   setCode: string
@@ -34,7 +23,7 @@ export function CardGridFilter({ cards, setCode }: CardGridFilterProps) {
   const availableRarities = useMemo(() => {
     const seen = new Set<string>()
     for (const c of cards) if (c.rarity) seen.add(c.rarity)
-    return RARITY_OPTIONS.filter(r => seen.has(r))
+    return Array.from(seen).sort()
   }, [cards])
 
   const filtered = useMemo(() => {
