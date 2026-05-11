@@ -38,54 +38,68 @@ type CatalogCard struct {
 }
 
 // ListSets retorna todos os sets disponíveis na pokemontcg.io,
-// ordenados por data de lançamento.
+// ordenados por data de lançamento. Trata paginação automaticamente:
+// a API tem ~175 sets hoje, mas pode ultrapassar 250 no futuro.
 func (c *Client) ListSets(ctx context.Context) ([]SetInfo, error) {
 	const pageSize = 250
-	target := fmt.Sprintf("%s/sets?pageSize=%d&orderBy=releaseDate", apiBase, pageSize)
+	var all []SetInfo
+	page := 1
 
-	resp, err := c.requestWithRetry(ctx, target)
-	if err != nil {
-		return nil, fmt.Errorf("pokemontcgio list sets: %w", err)
-	}
-	defer resp.Body.Close()
+	for {
+		target := fmt.Sprintf("%s/sets?pageSize=%d&page=%d&orderBy=releaseDate", apiBase, pageSize, page)
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("pokemontcgio list sets: status %d", resp.StatusCode)
-	}
+		resp, err := c.requestWithRetry(ctx, target)
+		if err != nil {
+			return nil, fmt.Errorf("pokemontcgio list sets (page=%d): %w", page, err)
+		}
 
-	var body struct {
-		Data []struct {
-			ID           string `json:"id"`
-			Name         string `json:"name"`
-			Series       string `json:"series"`
-			PrintedTotal int    `json:"printedTotal"`
-			Total        int    `json:"total"`
-			ReleaseDate  string `json:"releaseDate"`
-			Images       struct {
-				Logo   string `json:"logo"`
-				Symbol string `json:"symbol"`
-			} `json:"images"`
-		} `json:"data"`
-		TotalCount int `json:"totalCount"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("pokemontcgio list sets decode: %w", err)
-	}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("pokemontcgio list sets: status %d", resp.StatusCode)
+		}
 
-	sets := make([]SetInfo, 0, len(body.Data))
-	for _, d := range body.Data {
-		sets = append(sets, SetInfo{
-			ID:           d.ID,
-			Name:         d.Name,
-			Series:       d.Series,
-			PrintedTotal: d.PrintedTotal,
-			Total:        d.Total,
-			ReleaseDate:  d.ReleaseDate,
-			LogoURL:      d.Images.Logo,
-			SymbolURL:    d.Images.Symbol,
-		})
+		var body struct {
+			Data []struct {
+				ID           string `json:"id"`
+				Name         string `json:"name"`
+				Series       string `json:"series"`
+				PrintedTotal int    `json:"printedTotal"`
+				Total        int    `json:"total"`
+				ReleaseDate  string `json:"releaseDate"`
+				Images       struct {
+					Logo   string `json:"logo"`
+					Symbol string `json:"symbol"`
+				} `json:"images"`
+			} `json:"data"`
+			TotalCount int `json:"totalCount"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("pokemontcgio list sets decode (page=%d): %w", page, err)
+		}
+		resp.Body.Close()
+
+		for _, d := range body.Data {
+			all = append(all, SetInfo{
+				ID:           d.ID,
+				Name:         d.Name,
+				Series:       d.Series,
+				PrintedTotal: d.PrintedTotal,
+				Total:        d.Total,
+				ReleaseDate:  d.ReleaseDate,
+				LogoURL:      d.Images.Logo,
+				SymbolURL:    d.Images.Symbol,
+			})
+		}
+
+		// Sai quando a página retornou menos itens que o pageSize (última página)
+		// ou quando já buscamos todos conforme totalCount.
+		if len(body.Data) < pageSize || len(all) >= body.TotalCount {
+			break
+		}
+		page++
 	}
-	return sets, nil
+	return all, nil
 }
 
 // ListCardsBySet retorna todas as cartas de um set, tratando paginação automaticamente.
