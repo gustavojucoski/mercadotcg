@@ -164,7 +164,7 @@ func main() {
 
 		handler.NewAdminHandler(userRepo, storeRepo, storeMemberRepo, storeAuditRepo, authMw, localUploads).Routes(r)
 
-		handler.NewCardHandler(cardRepo, signalSvc).Routes(r)
+		handler.NewCardHandler(cardRepo, signalSvc, authMw).Routes(r)
 
 		// Rotas de loja: leitura pública, escrita requer membro com stock_manager+.
 		storeH := handler.NewStoreHandler(storeRepo, stockRepo, cardRepo, signalSvc, storeMemberRepo, storeAuditRepo, localUploads, userRepo)
