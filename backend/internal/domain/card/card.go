@@ -9,12 +9,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// Set representa uma coleção/expansão de Pokémon TCG.
+// Set representa uma coleção/expansão de um TCG.
+// O campo TCG identifica o jogo ao qual o set pertence (ex.: "pokemon", "magic").
 type Set struct {
 	ID          uuid.UUID  `json:"id"`
 	Code        string     `json:"code"`
 	Name        string     `json:"name"`
 	Series      string     `json:"series,omitempty"`
+	TCG         string     `json:"tcg"`
 	Language    Language   `json:"language"`
 	ReleaseDate *time.Time `json:"release_date,omitempty"`
 	TotalCards  int        `json:"total_cards,omitempty"`
