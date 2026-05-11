@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { UserMenu } from '@/components/UserMenu'
 import { useAuth } from '@/components/AuthProvider'
+import { GlobalSearch } from '@/components/GlobalSearch'
 
 const LOJA_TABS = [
   { label: 'Perfil', seg: 'perfil' },
@@ -60,11 +61,13 @@ export function SiteHeader() {
         : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800'
     }`
 
+  const setsActive = pathname.startsWith('/sets') || pathname.startsWith('/cards')
+
   return (
     <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-6">
-          <Link href="/" className="text-base font-bold text-zinc-900 dark:text-zinc-50 shrink-0">
+      <div className="mx-auto max-w-6xl px-4 py-3 flex items-center gap-4">
+        <div className="flex items-center gap-4 shrink-0">
+          <Link href="/" className="text-base font-bold text-zinc-900 dark:text-zinc-50">
             MercadoTCG
           </Link>
 
@@ -78,6 +81,17 @@ export function SiteHeader() {
               }`}
             >
               Início
+            </Link>
+
+            <Link
+              href="/sets"
+              className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                setsActive
+                  ? 'text-zinc-900 dark:text-zinc-50 font-medium bg-zinc-100 dark:bg-zinc-800'
+                  : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+              }`}
+            >
+              Sets
             </Link>
 
             {isLoggedIn && (
@@ -129,6 +143,10 @@ export function SiteHeader() {
               </div>
             )}
           </nav>
+        </div>
+
+        <div className="flex-1 flex justify-center px-2">
+          <GlobalSearch />
         </div>
 
         <UserMenu />
