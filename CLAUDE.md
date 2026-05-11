@@ -11,7 +11,7 @@ Este projeto possui agentes especializados. **Sempre delegue a tarefa ao agente 
 | Go Backend Engineer | `go-backend-engineer` | Qualquer código Go: handlers, repositórios, serviços, scrapers, migrations, testes de integração Go |
 | Next.js Frontend Engineer | `nextjs-frontend-engineer` | Qualquer código frontend: pages, components, lib/, hooks, estilos Tailwind, otimizações de performance |
 | Senior Software Architect | `senior-software-architect` | Decisões arquiteturais, novos ADRs, avaliação de tecnologias, design de módulos novos, **qualquer pesquisa técnica** |
-| Product Manager | `product-manager` | Priorização de backlog, definição de MVP, análise de ROI de features, especificação de requisitos |
+| Product Manager | `product-manager` | Requisitos, fluxo de UX, identificação de riscos, definição de MVP, priorização de backlog |
 | QA / SDET Engineer | `qa-sdet-engineer` | Testes integrados com testcontainers, E2E com Playwright, revisão de cobertura, CI/CD |
 
 ---
@@ -41,7 +41,7 @@ Este projeto possui agentes especializados. **Sempre delegue a tarefa ao agente 
 ### Workflow de revisão de feature ou decisão (quando solicitado)
 
 Quando o usuário pedir para "revisar", "analisar" ou "avaliar" algo:
-1. Spawnar `product-manager` — análise de ROI, riscos de produto, gaps de UX.
+1. Spawnar `product-manager` — requisitos, fluxo de UX, riscos de produto, gaps de experiência.
 2. Com o output do PM, spawnar `senior-software-architect` — ajustes arquiteturais, validação das decisões de design.
 3. Apresentar os dois outputs consolidados ao usuário.
 
