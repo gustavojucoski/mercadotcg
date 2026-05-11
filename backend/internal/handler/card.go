@@ -33,7 +33,10 @@ func (h *CardHandler) Routes(r chi.Router) {
 	// Rotas existentes.
 	r.Get("/cards/search", h.search)
 	r.Get("/cards/lookup", h.lookup)
-	r.Get("/cards/{id}", h.getByID)
+	// chi usa o mesmo slot de parâmetro para /cards/{id} e /cards/{slug}.
+	// O handler unificado detecta se o valor é um UUID (→ busca por ID) ou
+	// slug no formato "{setCode}-{collectorNumber}" (→ busca por set+número).
+	r.Get("/cards/{slug}", h.getCard)
 	r.Get("/cards/{id}/variants", h.listVariants)
 
 	// Rotas públicas de catálogo — sem autenticação.
@@ -44,7 +47,6 @@ func (h *CardHandler) Routes(r chi.Router) {
 	// /cards/autocomplete deve ser registrado ANTES de /cards/{slug} para o chi
 	// não capturar "autocomplete" como valor do parâmetro {slug}.
 	r.Get("/cards/autocomplete", h.autocomplete)
-	r.Get("/cards/{slug}", h.getCardBySlug)
 
 	r.Route("/admin/series", func(r chi.Router) {
 		r.Use(h.mw.RequirePlatformAdmin)
@@ -188,21 +190,31 @@ func (h *CardHandler) lookup(w http.ResponseWriter, r *http.Request) {
 }
 
 // ----------------------------------------------------------------------------
-// GET /cards/{id}
+// GET /cards/{slug}
+//
+// Aceita dois formatos:
+//   - UUID puro (ex: "550e8400-e29b-41d4-a716-446655440000") → busca por ID
+//   - Slug no formato "{setCode}-{collectorNumber}" (ex: "sv1-1", "swsh12-TG01")
+//     → busca por set e collector_number; retorna carta + set + variantes com preço NM
+//
 // ----------------------------------------------------------------------------
 
-func (h *CardHandler) getByID(w http.ResponseWriter, r *http.Request) {
-	id, err := parseUUID(chi.URLParam(r, "id"))
-	if err != nil {
-		writeBadRequest(w, "id inválido")
+func (h *CardHandler) getCard(w http.ResponseWriter, r *http.Request) {
+	param := chi.URLParam(r, "slug")
+
+	// Tenta interpretar como UUID primeiro.
+	if id, err := parseUUID(param); err == nil {
+		c, err := h.cards.GetCardByID(r.Context(), id)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, c)
 		return
 	}
-	c, err := h.cards.GetCardByID(r.Context(), id)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, c)
+
+	// Caso contrário, trata como slug "{setCode}-{collectorNumber}".
+	h.getCardBySlug(w, r)
 }
 
 // ----------------------------------------------------------------------------
@@ -438,9 +450,9 @@ type variantWithPrice struct {
 	PriceSummary *postgres.PriceSummary `json:"price_summary"`
 }
 
-// GET /cards/{slug}  — slug format: "{setCode}-{collectorNumber}"
-// Collector numbers can themselves contain hyphens (e.g. "TG01-EN"), so we
-// split only on the FIRST hyphen.
+// getCardBySlug é chamado por getCard quando o parâmetro não é um UUID.
+// Formato do slug: "{setCode}-{collectorNumber}".
+// Collector numbers podem conter hífens (ex: "TG01-EN") — split apenas no PRIMEIRO hífen.
 func (h *CardHandler) getCardBySlug(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 
