@@ -1,10 +1,12 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { UserMenu } from '@/components/UserMenu'
 import { useAuth } from '@/components/AuthProvider'
+import { GlobalSearch } from '@/components/GlobalSearch'
+import { getMyStores } from '@/lib/stores-admin'
 
 const LOJA_TABS = [
   { label: 'Perfil', seg: 'perfil' },
@@ -21,6 +23,12 @@ export function SiteHeader() {
 
   const [open, setOpen] = useState<string | null>(null)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [hasStores, setHasStores] = useState(false)
+
+  useEffect(() => {
+    if (!user) { setHasStores(false); return }
+    getMyStores().then(stores => setHasStores(stores.length > 0)).catch(() => setHasStores(false))
+  }, [user])
 
   const openMenu = (name: string) => {
     if (closeTimer.current) clearTimeout(closeTimer.current)
@@ -60,11 +68,13 @@ export function SiteHeader() {
         : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800'
     }`
 
+  const setsActive = pathname.startsWith('/sets') || pathname.startsWith('/cards')
+
   return (
     <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-6">
-          <Link href="/" className="text-base font-bold text-zinc-900 dark:text-zinc-50 shrink-0">
+      <div className="mx-auto max-w-6xl px-4 py-3 flex items-center gap-4">
+        <div className="flex items-center gap-4 shrink-0">
+          <Link href="/" className="text-base font-bold text-zinc-900 dark:text-zinc-50">
             MercadoTCG
           </Link>
 
@@ -80,7 +90,18 @@ export function SiteHeader() {
               Início
             </Link>
 
-            {isLoggedIn && (
+            <Link
+              href="/sets"
+              className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                setsActive
+                  ? 'text-zinc-900 dark:text-zinc-50 font-medium bg-zinc-100 dark:bg-zinc-800'
+                  : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+              }`}
+            >
+              Sets
+            </Link>
+
+            {isLoggedIn && hasStores && (
               <div
                 className="relative"
                 onMouseEnter={() => openMenu('loja')}
@@ -129,6 +150,10 @@ export function SiteHeader() {
               </div>
             )}
           </nav>
+        </div>
+
+        <div className="flex-1 flex justify-center px-2">
+          <GlobalSearch />
         </div>
 
         <UserMenu />

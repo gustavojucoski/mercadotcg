@@ -7,16 +7,20 @@
 //	import-catalog                    # importa todos os sets + cards
 //	import-catalog --set sv8          # importa só um set específico
 //	import-catalog --recent 5         # importa só os 5 sets mais recentes
-//	import-catalog --download-images  # baixa imagens para UPLOADS_DIR
+//	import-catalog --download-images  # baixa imagens para o storage provider
 //
 // Idempotente: cards/sets já existentes são pulados (UNIQUE conflict tratado).
 //
 // Variáveis de ambiente:
 //
-//	DATABASE_URL          (obrigatório)
-//	POKEMON_TCG_API_KEY   (opcional) — aumenta rate limit de 1k/dia para 20k/dia
-//	UPLOADS_DIR           (obrigatório com --download-images)
-//	UPLOADS_BASE_URL      (obrigatório com --download-images)
+//	DATABASE_URL           (obrigatório)
+//	POKEMON_TCG_API_KEY    (opcional) — aumenta rate limit de 1k/dia para 20k/dia
+//	STORAGE_BACKEND        "local" (default) | "s3"
+//	STORAGE_LOCAL_PATH     diretório local (default: ./data/images); usado com STORAGE_BACKEND=local
+//	STORAGE_LOCAL_BASE_URL URL base pública (ex: http://localhost:8080/uploads); obrigatório com STORAGE_BACKEND=local
+//	S3_BUCKET              nome do bucket (obrigatório com STORAGE_BACKEND=s3)
+//	S3_REGION              região AWS (default: us-east-1); usado com STORAGE_BACKEND=s3
+//	STORAGE_S3_CUSTOM_URL  URL customizada (CloudFront etc.); opcional com STORAGE_BACKEND=s3
 package main
 
 import (
@@ -50,7 +54,7 @@ func main() {
 	// Flags
 	setCode := flag.String("set", "", "código de um set específico (ex.: sv8). Se vazio, importa todos.")
 	recent := flag.Int("recent", 0, "se > 0, importa só os N sets mais recentes.")
-	downloadImages := flag.Bool("download-images", false, "baixa imagens das cartas para UPLOADS_DIR")
+	downloadImages := flag.Bool("download-images", false, "baixa imagens das cartas para o storage provider")
 	flag.Parse()
 
 	// Logger em console para o CLI.
@@ -88,18 +92,16 @@ func main() {
 	}
 
 	// Provider de upload (somente se --download-images).
-	var uploadProvider *upload.LocalProvider
+	var uploadProvider upload.Provider
 	if *downloadImages {
-		uploadsDir := os.Getenv("UPLOADS_DIR")
-		uploadsBaseURL := os.Getenv("UPLOADS_BASE_URL")
-		if uploadsDir == "" || uploadsBaseURL == "" {
-			log.Fatal().Msg("--download-images requer UPLOADS_DIR e UPLOADS_BASE_URL")
-		}
-		uploadProvider, err = upload.NewLocal(uploadsDir, uploadsBaseURL)
+		uploadProvider, err = upload.NewFromEnv()
 		if err != nil {
-			log.Fatal().Err(err).Msg("criar LocalProvider")
+			log.Fatal().Err(err).Msg("criar storage provider")
 		}
 	}
+
+	// httpClient compartilhado entre o loop principal (logos de set) e os workers.
+	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	log.Info().Msg("==> Importando catálogo Pokemon TCG")
 
@@ -121,10 +123,11 @@ func main() {
 
 	// Canal para jobs de download de imagem (buffer = 200 para não bloquear o loop principal).
 	type imgJob struct {
-		cardID   uuid.UUID
-		setID    string
-		smallURL string
-		largeURL string
+		cardID          uuid.UUID
+		setID           string // code do set na API (ex: "sv8pt5")
+		collectorNumber string // collector_number formatado (ex: "1/198", "SWSH001")
+		smallURL        string
+		largeURL        string
 	}
 	imgJobs := make(chan imgJob, 200)
 
@@ -143,14 +146,13 @@ func main() {
 				defer wg.Done()
 				imgHTTP := &http.Client{Timeout: 30 * time.Second}
 				for job := range imgJobs {
-					cardIDStr := job.cardID.String()
-					newSmall, newLarge, err := downloadAndStore(workerCtx, imgHTTP, uploadProvider, cardIDStr, job.setID, job.smallURL, job.largeURL)
+					newSmall, newLarge, err := downloadAndStore(workerCtx, imgHTTP, uploadProvider, "pokemon", job.setID, job.collectorNumber, job.smallURL, job.largeURL)
 					if err != nil {
-						log.Warn().Err(err).Str("card_id", cardIDStr).Msg("download imagem falhou")
+						log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("download imagem falhou")
 						continue
 					}
 					if err := repo.UpdateCardImages(workerCtx, job.cardID, newSmall, newLarge); err != nil {
-						log.Warn().Err(err).Str("card_id", cardIDStr).Msg("UpdateCardImages falhou")
+						log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("UpdateCardImages falhou")
 					}
 				}
 			}()
@@ -174,6 +176,35 @@ func main() {
 			imported++
 		}
 
+		// Download inline do logo do set (1 arquivo por set, não justifica worker pool).
+		if *downloadImages && dbSet.ImageURL != "" {
+			ext := filepath.Ext(path.Base(dbSet.ImageURL))
+			if ext == "" {
+				ext = ".png"
+			}
+			key := fmt.Sprintf("pokemon/sets/%s%s", s.ID, ext)
+			exists, err := uploadProvider.Exists(ctx, key)
+			if err != nil {
+				log.Warn().Err(err).Str("set", s.ID).Msg("exists check logo falhou")
+			} else if !exists {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, dbSet.ImageURL, nil)
+				if err == nil {
+					resp, err := httpClient.Do(req)
+					if err == nil && resp.StatusCode == http.StatusOK {
+						publicURL, err := uploadProvider.Put(ctx, key, resp.Body, "image/png")
+						resp.Body.Close()
+						if err != nil {
+							log.Warn().Err(err).Str("set", s.ID).Msg("upload logo falhou")
+						} else {
+							if err := repo.UpdateSetImageURL(ctx, dbSet.ID, publicURL); err != nil {
+								log.Warn().Err(err).Str("set", s.ID).Msg("UpdateSetImageURL falhou")
+							}
+						}
+					}
+				}
+			}
+		}
+
 		cards, err := client.ListCardsBySet(ctx, s.ID)
 		if err != nil {
 			log.Error().Err(err).Str("set", s.ID).Msg("erro nos cards")
@@ -195,10 +226,11 @@ func main() {
 
 			if *downloadImages && cardID != (uuid.UUID{}) {
 				imgJobs <- imgJob{
-					cardID:   cardID,
-					setID:    s.ID,
-					smallURL: c.SmallURL,
-					largeURL: c.LargeURL,
+					cardID:          cardID,
+					setID:           s.ID,
+					collectorNumber: buildCollectorNumber(c.Number, s.PrintedTotal),
+					smallURL:        c.SmallURL,
+					largeURL:        c.LargeURL,
 				}
 			}
 		}
@@ -365,19 +397,20 @@ func upsertCard(
 // ----------------------------------------------------------------------------
 
 // downloadAndStore baixa smallURL e largeURL, salva no provider e retorna as
-// novas URLs públicas. Se o arquivo já existe no disco, pula o download
-// (idempotência: checa com os.Stat antes de gravar).
+// novas URLs públicas.
+// Chave gerada: {tcg}/cards/{setCode}/{collectorNumberSafe}_{size}.{ext}
 func downloadAndStore(
 	ctx context.Context,
 	imgHTTP *http.Client,
-	provider *upload.LocalProvider,
-	cardID, setID, smallURL, largeURL string,
+	provider upload.Provider,
+	tcg, setCode, collectorNumber, smallURL, largeURL string,
 ) (newSmall, newLarge string, err error) {
-	newSmall, err = downloadOne(ctx, imgHTTP, provider, setID, cardID+"_small", smallURL)
+	collSafe := strings.ReplaceAll(collectorNumber, "/", "_")
+	newSmall, err = downloadOne(ctx, imgHTTP, provider, tcg, setCode, collSafe+"_small", smallURL)
 	if err != nil {
 		return "", "", fmt.Errorf("small: %w", err)
 	}
-	newLarge, err = downloadOne(ctx, imgHTTP, provider, setID, cardID+"_large", largeURL)
+	newLarge, err = downloadOne(ctx, imgHTTP, provider, tcg, setCode, collSafe+"_large", largeURL)
 	if err != nil {
 		return "", "", fmt.Errorf("large: %w", err)
 	}
@@ -385,14 +418,14 @@ func downloadAndStore(
 }
 
 // downloadOne baixa uma imagem e a armazena via provider.
-// A chave no provider é "cards/{setID}/{filename}.{ext}".
-// Se o arquivo já existir no disco, pula o download e retorna a URL existente
+// A chave no provider é "{tcg}/cards/{setCode}/{filename}.{ext}".
+// Se o arquivo já existir no provider, pula o download e retorna a URL existente
 // (idempotência em re-runs com --download-images).
 func downloadOne(
 	ctx context.Context,
 	imgHTTP *http.Client,
-	provider *upload.LocalProvider,
-	setID, filename, srcURL string,
+	provider upload.Provider,
+	tcg, setCode, filename, srcURL string,
 ) (string, error) {
 	if srcURL == "" {
 		return "", nil
@@ -402,12 +435,13 @@ func downloadOne(
 	if ext == "" {
 		ext = ".png"
 	}
-	key := fmt.Sprintf("cards/%s/%s%s", setID, filename, ext)
+	key := fmt.Sprintf("%s/cards/%s/%s%s", tcg, setCode, filename, ext)
 
-	// Idempotência: se o arquivo já existe no disco, retorna a URL pública sem
-	// fazer nenhuma requisição HTTP — preserva rate limit em re-runs.
-	destPath := filepath.Join(provider.Root(), filepath.FromSlash(key))
-	if _, err := os.Stat(destPath); err == nil {
+	exists, err := provider.Exists(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("exists check %s: %w", key, err)
+	}
+	if exists {
 		return provider.PublicURL(key), nil
 	}
 
@@ -425,7 +459,13 @@ func downloadOne(
 		return "", fmt.Errorf("download %s: status %d", srcURL, resp.StatusCode)
 	}
 
-	publicURL, err := provider.Put(ctx, key, io.Reader(resp.Body))
+	// Detecta content type pela extensão — mais confiável que o header da origem.
+	contentType := "image/png"
+	if ext == ".jpg" || ext == ".jpeg" {
+		contentType = "image/jpeg"
+	}
+
+	publicURL, err := provider.Put(ctx, key, io.Reader(resp.Body), contentType)
 	if err != nil {
 		return "", fmt.Errorf("put %s: %w", key, err)
 	}

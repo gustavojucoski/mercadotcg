@@ -540,14 +540,14 @@ func (h *StoreHandler) UploadLogo(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	ext, err := detectStoreImageType(file, header.Header.Get("Content-Type"))
+	ext, mime, err := detectStoreImageType(file, header.Header.Get("Content-Type"))
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
 
 	key := "logos/" + uuid.New().String() + "." + ext
-	logoURL, err := h.uploads.Put(r.Context(), key, file)
+	logoURL, err := h.uploads.Put(r.Context(), key, file, mime)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -574,20 +574,20 @@ func (h *StoreHandler) UploadLogo(w http.ResponseWriter, r *http.Request) {
 
 // detectStoreImageType mirrors detectImageType from admin.go but lives here
 // so StoreHandler has no dependency on AdminHandler internals.
-func detectStoreImageType(f io.ReadSeeker, headerCT string) (string, error) {
+func detectStoreImageType(f io.ReadSeeker, headerCT string) (ext, mime string, err error) {
 	if e, ok := allowedImageTypes[headerCT]; ok {
-		return e, nil
+		return e, headerCT, nil
 	}
 	buf := make([]byte, 512)
 	n, _ := f.Read(buf)
 	if _, serr := f.Seek(0, io.SeekStart); serr != nil {
-		return "", fmt.Errorf("erro ao ler arquivo")
+		return "", "", fmt.Errorf("erro ao ler arquivo")
 	}
 	detected := http.DetectContentType(buf[:n])
 	if e, ok := allowedImageTypes[detected]; ok {
-		return e, nil
+		return e, detected, nil
 	}
-	return "", fmt.Errorf("tipo de arquivo não suportado (use jpeg, png, webp ou gif)")
+	return "", "", fmt.Errorf("tipo de arquivo não suportado (use jpeg, png, webp ou gif)")
 }
 
 // ----------------------------------------------------------------------------

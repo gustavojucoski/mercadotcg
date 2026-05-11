@@ -62,6 +62,7 @@ func main() {
 	defer pool.Close()
 
 	cardRepo := postgres.NewCardRepo(pool)
+	priceDailyRepo := postgres.NewPriceDailyRepo(pool)
 	storeRepo := postgres.NewStoreRepo(pool)
 	stockRepo := postgres.NewStockRepo(pool)
 	forexRepo := postgres.NewForexRepo(pool)
@@ -164,7 +165,7 @@ func main() {
 
 		handler.NewAdminHandler(userRepo, storeRepo, storeMemberRepo, storeAuditRepo, authMw, localUploads).Routes(r)
 
-		handler.NewCardHandler(cardRepo, signalSvc, authMw).Routes(r)
+		handler.NewCardHandler(cardRepo, priceDailyRepo, signalSvc, authMw).Routes(r)
 
 		// Rotas de loja: leitura pública, escrita requer membro com stock_manager+.
 		storeH := handler.NewStoreHandler(storeRepo, stockRepo, cardRepo, signalSvc, storeMemberRepo, storeAuditRepo, localUploads, userRepo)

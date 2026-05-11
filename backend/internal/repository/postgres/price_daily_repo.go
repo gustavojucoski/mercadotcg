@@ -2,14 +2,25 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/pricing"
 )
+
+// PriceSummary é o resumo de preço mais recente de uma variante numa condição.
+type PriceSummary struct {
+	MinBRL      decimal.Decimal `json:"min_brl"`
+	AvgBRL      decimal.Decimal `json:"avg_brl"`
+	MaxBRL      decimal.Decimal `json:"max_brl"`
+	LastUpdated time.Time       `json:"last_updated"`
+}
 
 // PriceDailyRepo é a tabela quente que alimenta gráficos de tendência.
 // Atualizada por job de agregação que faz UPSERT a partir de price_history.
@@ -168,4 +179,31 @@ func (r *PriceDailyRepo) RebuildDay(ctx context.Context, day time.Time) (int64, 
 		return 0, fmt.Errorf("rebuild price_daily for %s: %w", day.Format("2006-01-02"), err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+const getLatestByVariantSQL = `
+SELECT sale_min, sale_avg, sale_max, day
+FROM price_daily
+WHERE variant_id = $1 AND condition = $2::card_condition
+ORDER BY day DESC
+LIMIT 1`
+
+// GetLatestByVariant retorna o resumo de preço mais recente de uma variante numa
+// condição. Retorna nil, nil quando não houver nenhum dado em price_daily para
+// essa combinação — o caller deve tratar nil como "sem dados disponíveis".
+func (r *PriceDailyRepo) GetLatestByVariant(ctx context.Context, variantID uuid.UUID, condition string) (*PriceSummary, error) {
+	var s PriceSummary
+	var day time.Time
+
+	err := r.pool.QueryRow(ctx, getLatestByVariantSQL, variantID, condition).Scan(
+		&s.MinBRL, &s.AvgBRL, &s.MaxBRL, &day,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get latest price_daily: %w", err)
+	}
+	s.LastUpdated = day
+	return &s, nil
 }
