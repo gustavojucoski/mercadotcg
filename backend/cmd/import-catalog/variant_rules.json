@@ -1,0 +1,66 @@
+{
+  "pokemon": {
+    "Scarlet & Violet": {
+      "Common":                        ["normal", "poke_ball_mirror"],
+      "Uncommon":                      ["normal", "poke_ball_mirror"],
+      "Rare":                          ["holo", "poke_ball_mirror"],
+      "Double Rare":                   ["holo", "poke_ball_mirror"],
+      "Ultra Rare":                    ["holo", "poke_ball_mirror"],
+      "Rare Holo":                     ["holo", "poke_ball_mirror"],
+      "Rare Holo V":                   ["holo", "poke_ball_mirror"],
+      "Rare Holo VMAX":                ["holo", "poke_ball_mirror"],
+      "Rare Holo VSTAR":               ["holo", "poke_ball_mirror"],
+      "Illustration Rare":             ["normal", "poke_ball_mirror"],
+      "Special Illustration Rare":     ["normal", "master_ball_mirror"],
+      "Hyper Rare":                    ["normal", "master_ball_mirror"],
+      "Secret Rare":                   ["normal", "master_ball_mirror"],
+      "ACE SPEC Rare":                 ["normal", "master_ball_mirror"],
+      "Shiny Rare":                    ["normal", "poke_ball_mirror"],
+      "Shiny Ultra Rare":              ["normal", "master_ball_mirror"]
+    },
+    "Sword & Shield": {
+      "Common":                        ["normal", "reverse_holo"],
+      "Uncommon":                      ["normal", "reverse_holo"],
+      "Rare":                          ["normal", "reverse_holo"],
+      "Rare Holo":                     ["holo", "reverse_holo"],
+      "Rare Holo V":                   ["holo"],
+      "Rare Holo VMAX":                ["holo"],
+      "Rare Holo VSTAR":               ["holo"],
+      "Rare Ultra":                    ["holo"],
+      "Rare Rainbow":                  ["holo"],
+      "Rare Secret":                   ["holo"],
+      "Amazing Rare":                  ["holo"]
+    },
+    "Sun & Moon": {
+      "Common":                        ["normal", "reverse_holo"],
+      "Uncommon":                      ["normal", "reverse_holo"],
+      "Rare":                          ["normal", "reverse_holo"],
+      "Rare Holo":                     ["holo", "reverse_holo"],
+      "Rare Holo GX":                  ["holo"],
+      "Rare Holo EX":                  ["holo"],
+      "Rare Rainbow":                  ["holo"],
+      "Rare Secret":                   ["holo"],
+      "Rare Prism Star":               ["holo"],
+      "Rare Ultra":                    ["holo"]
+    },
+    "_default": {
+      "Common":                        ["normal", "reverse_holo"],
+      "Uncommon":                      ["normal", "reverse_holo"],
+      "Rare":                          ["normal", "reverse_holo"],
+      "Rare Holo":                     ["holo", "reverse_holo"],
+      "Rare Holo EX":                  ["holo"],
+      "Rare Holo GX":                  ["holo"],
+      "Rare BREAK":                    ["holo"],
+      "Rare Holo LV.X":                ["holo"],
+      "Rare Holo Star":                ["holo"],
+      "Rare Prime":                    ["holo"],
+      "Rare Ultra":                    ["holo"],
+      "Rare Secret":                   ["holo"],
+      "Rare ACE":                      ["holo"],
+      "Legend":                        ["holo"],
+      "Rare Shining":                  ["holo"],
+      "Rare Shiny":                    ["holo"],
+      "Rare Shiny GX":                 ["holo"]
+    }
+  }
+}
