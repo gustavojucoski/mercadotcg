@@ -29,7 +29,10 @@ export default async function TCGSetsPage({ params }: Props) {
   const label = SUPPORTED_TCGS[tcg]
   if (!label) notFound()
 
-  const data = await fetchSets(tcg, 1, 200).catch(() => null)
+  const data = await fetchSets(tcg, 1, 200).catch((err: unknown) => {
+    console.error('[sets page] fetchSets falhou:', err)
+    return null
+  })
   const sets = data?.sets ?? []
 
   return (

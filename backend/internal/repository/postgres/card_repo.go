@@ -552,7 +552,7 @@ SELECT cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''),
        COALESCE(cr.name_pt, '') AS series_name_pt,
        COALESCE(cs.tcg, 'pokemon') AS tcg,
        cs.language, cs.release_date, COALESCE(cs.total_cards, 0),
-       COALESCE(cs.image_url, cs.logo_url, '') AS image_url,
+       COALESCE(cs.image_url, '') AS image_url,
        cs.created_at, cs.updated_at,
        COUNT(*) OVER() AS total
 FROM card_sets cs
@@ -708,12 +708,19 @@ SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text,
        COALESCE(cr.name_pt, '') AS series_name_pt,
        s.series_id,
        COALESCE(s.tcg, 'pokemon'), s.language, s.release_date,
-       COALESCE(s.total_cards, 0), COALESCE(s.image_url, s.logo_url, ''),
+       COALESCE(s.total_cards, 0), COALESCE(s.image_url, ''),
        s.created_at, s.updated_at
 FROM cards c
 JOIN card_sets s ON s.id = c.set_id
 LEFT JOIN card_series cr ON cr.id = s.series_id
-WHERE s.code = $1 AND c.collector_number = $2
+WHERE s.code = $1 AND (
+    c.collector_number = $2
+    OR (
+        c.collector_number ~ '^\d+$'
+        AND $2 ~ '^\d+$'
+        AND c.collector_number::int = $2::int
+    )
+)
 LIMIT 1`
 
 // GetCardBySetAndNumber busca uma carta pelo código do set e collector_number.

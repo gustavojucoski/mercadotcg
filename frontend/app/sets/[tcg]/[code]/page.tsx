@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation'
 import { SiteHeader } from '@/components/SiteHeader'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { CardGridFilter } from '@/components/CardGridFilter'
-import { fetchSet, fetchSetCards, fetchSets } from '@/lib/catalog'
+import { fetchAllSetCards, fetchSet, fetchSets } from '@/lib/catalog'
 
 export const revalidate = 3600
 
@@ -11,11 +11,8 @@ const SUPPORTED_TCGS: Record<string, string> = {
   pokemon: 'Pokémon TCG',
 }
 
-const LIMIT = 60
-
 interface Props {
   params: Promise<{ tcg: string; code: string }>
-  searchParams: Promise<{ page?: string }>
 }
 
 export async function generateStaticParams() {
@@ -27,7 +24,7 @@ export async function generateStaticParams() {
   }
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ tcg: string; code: string }> }): Promise<Metadata> {
   const { tcg, code } = await params
   try {
     const set = await fetchSet(tcg, code)
@@ -42,25 +39,18 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-export default async function SetDetailPage({ params, searchParams }: Props) {
+export default async function SetDetailPage({ params }: Props) {
   const { tcg, code } = await params
-  const { page: pageParam } = await searchParams
 
   const tcgLabel = SUPPORTED_TCGS[tcg]
   if (!tcgLabel) notFound()
 
-  const page = Math.max(1, parseInt(pageParam ?? '1', 10) || 1)
-
-  const [set, cardsData] = await Promise.all([
+  const [set, cards] = await Promise.all([
     fetchSet(tcg, code).catch(() => null),
-    fetchSetCards(tcg, code, page, LIMIT).catch(() => null),
+    fetchAllSetCards(tcg, code).catch(() => []),
   ])
 
   if (!set) notFound()
-
-  const cards = cardsData?.cards ?? []
-  const total = cardsData?.total ?? 0
-  const totalPages = Math.ceil(total / LIMIT)
 
   const setDisplayName = set.name_pt && set.name_pt.length > 0 ? set.name_pt : set.name
   const seriesDisplayName = set.series_pt && set.series_pt.length > 0 ? set.series_pt : set.series
@@ -116,11 +106,6 @@ export default async function SetDetailPage({ params, searchParams }: Props) {
         <CardGridFilter
           cards={cards}
           setCode={set.code}
-          total={total}
-          page={page}
-          totalPages={totalPages}
-          tcg={tcg}
-          code={code}
         />
       </main>
     </div>

@@ -19,22 +19,14 @@ const RARITY_OPTIONS = [
 interface CardGridFilterProps {
   cards: CardInSet[]
   setCode: string
-  total: number
-  page: number
-  totalPages: number
-  tcg: string
-  code: string
 }
 
-export function CardGridFilter({
-  cards,
-  setCode,
-  total,
-  page,
-  totalPages,
-  tcg,
-  code,
-}: CardGridFilterProps) {
+function normalizeNum(s: string): string {
+  const n = parseInt(s, 10)
+  return isNaN(n) ? s.toLowerCase() : String(n)
+}
+
+export function CardGridFilter({ cards, setCode }: CardGridFilterProps) {
   const [query, setQuery] = useState('')
   const [selectedRarities, setSelectedRarities] = useState<Set<string>>(new Set())
   const [view, setView] = useState<'grid' | 'list'>('grid')
@@ -48,12 +40,13 @@ export function CardGridFilter({
   const filtered = useMemo(() => {
     let result = cards
     if (query.trim()) {
-      const q = query.toLowerCase()
+      const q = query.trim()
+      const qNorm = normalizeNum(q)
       result = result.filter(
         c =>
           c.name.toLowerCase().includes(q) ||
           (c.name_pt && c.name_pt.toLowerCase().includes(q)) ||
-          c.collector_number.includes(q),
+          normalizeNum(c.collector_number).includes(qNorm),
       )
     }
     if (selectedRarities.size > 0) {
@@ -70,8 +63,6 @@ export function CardGridFilter({
       return next
     })
   }
-
-  const basePath = `/sets/${tcg}/${code}`
 
   return (
     <div>
@@ -144,9 +135,8 @@ export function CardGridFilter({
 
       <p className="text-xs text-zinc-400 mb-4">
         {query || selectedRarities.size > 0
-          ? `${filtered.length} de ${total} cartas`
-          : `${total} cartas`}
-        {totalPages > 1 && ` — página ${page} de ${totalPages}`}
+          ? `${filtered.length} de ${cards.length} cartas`
+          : `${cards.length} cartas`}
       </p>
 
       {view === 'grid' ? (
@@ -192,29 +182,6 @@ export function CardGridFilter({
         </div>
       )}
 
-      {totalPages > 1 && (
-        <div className="mt-8 flex items-center justify-center gap-2">
-          {page > 1 && (
-            <Link
-              href={`${basePath}?page=${page - 1}`}
-              className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
-            >
-              Anterior
-            </Link>
-          )}
-          <span className="text-sm text-zinc-500">
-            {page} / {totalPages}
-          </span>
-          {page < totalPages && (
-            <Link
-              href={`${basePath}?page=${page + 1}`}
-              className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
-            >
-              Próxima
-            </Link>
-          )}
-        </div>
-      )}
     </div>
   )
 }

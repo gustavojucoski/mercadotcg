@@ -1,13 +1,19 @@
 import type {
   AutocompleteItem,
   CardDetail,
+  CardInSet,
   SetCardsResponse,
   SetListResponse,
   TCGSeries,
   TCGSet,
 } from './types'
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
+// API_INTERNAL_URL é definida apenas server-side (sem NEXT_PUBLIC) e aponta para
+// o hostname interno do Docker. No browser, cai no NEXT_PUBLIC_API_URL (URL pública).
+const API =
+  process.env.API_INTERNAL_URL ??
+  process.env.NEXT_PUBLIC_API_URL ??
+  'http://localhost:8080'
 
 export async function fetchSeries(tcg?: string): Promise<TCGSeries[]> {
   const url = tcg
@@ -24,7 +30,7 @@ export async function fetchSets(
   limit = 30,
 ): Promise<SetListResponse> {
   const url = `${API}/api/v1/sets/${encodeURIComponent(tcg)}?page=${page}&limit=${limit}`
-  const res = await fetch(url, { next: { revalidate: 86400 } })
+  const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`fetchSets: HTTP ${res.status}`)
   return res.json()
 }
@@ -46,6 +52,22 @@ export async function fetchSetCards(
   const res = await fetch(url, { next: { revalidate: 3600 } })
   if (!res.ok) throw new Error(`fetchSetCards: HTTP ${res.status}`)
   return res.json()
+}
+
+export async function fetchAllSetCards(
+  tcg: string,
+  code: string,
+): Promise<CardInSet[]> {
+  const first = await fetchSetCards(tcg, code, 1, 200)
+  const total = first.total
+  if (total <= 200) return first.cards
+  const remainingPages = Math.ceil((total - 200) / 200)
+  const rest = await Promise.all(
+    Array.from({ length: remainingPages }, (_, i) =>
+      fetchSetCards(tcg, code, i + 2, 200),
+    ),
+  )
+  return [...first.cards, ...rest.flatMap(r => r.cards)]
 }
 
 export async function fetchCard(slug: string): Promise<CardDetail> {

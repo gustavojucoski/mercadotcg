@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { UserMenu } from '@/components/UserMenu'
 import { useAuth } from '@/components/AuthProvider'
 import { GlobalSearch } from '@/components/GlobalSearch'
+import { getMyStores } from '@/lib/stores-admin'
 
 const LOJA_TABS = [
   { label: 'Perfil', seg: 'perfil' },
@@ -22,6 +23,12 @@ export function SiteHeader() {
 
   const [open, setOpen] = useState<string | null>(null)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [hasStores, setHasStores] = useState(false)
+
+  useEffect(() => {
+    if (!user) { setHasStores(false); return }
+    getMyStores().then(stores => setHasStores(stores.length > 0)).catch(() => setHasStores(false))
+  }, [user])
 
   const openMenu = (name: string) => {
     if (closeTimer.current) clearTimeout(closeTimer.current)
@@ -94,7 +101,7 @@ export function SiteHeader() {
               Sets
             </Link>
 
-            {isLoggedIn && (
+            {isLoggedIn && hasStores && (
               <div
                 className="relative"
                 onMouseEnter={() => openMenu('loja')}
