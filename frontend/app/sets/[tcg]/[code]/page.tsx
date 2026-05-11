@@ -49,7 +49,7 @@ export default async function SetDetailPage({ params, searchParams }: Props) {
   const tcgLabel = SUPPORTED_TCGS[tcg]
   if (!tcgLabel) notFound()
 
-  const page = Math.max(1, parseInt(pageParam ?? '1', 10))
+  const page = Math.max(1, parseInt(pageParam ?? '1', 10) || 1)
 
   const [set, cardsData] = await Promise.all([
     fetchSet(tcg, code).catch(() => null),

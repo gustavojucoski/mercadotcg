@@ -127,8 +127,8 @@ export interface CardDetail {
     supertype: string
     subtypes: string[]
     types: string[]
-    image_url: string
     image_small_url: string
+    image_large_url: string
   }
   set: TCGSet
   variants: CardVariantDetail[]

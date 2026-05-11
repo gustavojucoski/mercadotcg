@@ -76,7 +76,7 @@ export default async function CardDetailPage({ params }: Props) {
     '@context': 'https://schema.org',
     '@type': 'Product',
     name: cardName,
-    image: card.image_url || card.image_small_url,
+    image: card.image_large_url || card.image_small_url,
     description: `Carta ${cardName} do set ${setName}. Número ${card.collector_number}, raridade ${card.rarity}.`,
     offers: variants.map(v => ({
       '@type': 'Offer',
@@ -111,7 +111,7 @@ export default async function CardDetailPage({ params }: Props) {
           <div className="lg:sticky lg:top-6 lg:self-start">
             <VariantTabs
               variants={variants}
-              imageSrc={card.image_url || card.image_small_url}
+              imageSrc={card.image_large_url || card.image_small_url}
               imageAlt={cardName}
             />
           </div>

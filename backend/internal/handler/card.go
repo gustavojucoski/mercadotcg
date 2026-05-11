@@ -33,20 +33,17 @@ func (h *CardHandler) Routes(r chi.Router) {
 	// Rotas existentes.
 	r.Get("/cards/search", h.search)
 	r.Get("/cards/lookup", h.lookup)
-	// chi usa o mesmo slot de parâmetro para /cards/{id} e /cards/{slug}.
-	// O handler unificado detecta se o valor é um UUID (→ busca por ID) ou
-	// slug no formato "{setCode}-{collectorNumber}" (→ busca por set+número).
-	r.Get("/cards/{slug}", h.getCard)
-	r.Get("/cards/{id}/variants", h.listVariants)
-
 	// Rotas públicas de catálogo — sem autenticação.
 	r.Get("/series", h.listSeriesPublic)
 	r.Get("/sets/{tcg}", h.listSetsByTCG)
 	r.Get("/sets/{tcg}/{code}", h.getSetByCode)
 	r.Get("/sets/{tcg}/{code}/cards", h.listCardsBySet)
-	// /cards/autocomplete deve ser registrado ANTES de /cards/{slug} para o chi
-	// não capturar "autocomplete" como valor do parâmetro {slug}.
+	// autocomplete registrado antes de /cards/{slug}: chi usa radix tree (estático > paramétrico),
+	// mas a ordem explícita documenta a intenção e evita qualquer ambiguidade futura.
 	r.Get("/cards/autocomplete", h.autocomplete)
+	// Handler unificado: UUID → busca por ID; slug "{setCode}-{collectorNumber}" → busca por set+número.
+	r.Get("/cards/{slug}", h.getCard)
+	r.Get("/cards/{id}/variants", h.listVariants)
 
 	r.Route("/admin/series", func(r chi.Router) {
 		r.Use(h.mw.RequirePlatformAdmin)
@@ -412,6 +409,7 @@ func (h *CardHandler) listCardsBySet(w http.ResponseWriter, r *http.Request) {
 		cards = []postgres.CardWithVariants{}
 	}
 
+	w.Header().Set("Cache-Control", "public, max-age=3600")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"set_code": code,
 		"total":    total,

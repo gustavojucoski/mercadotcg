@@ -748,7 +748,7 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 // de similaridade (trgm). O UNION é necessário porque ORDER BY não pode ser
 // aplicado internamente em cada ramo antes da combinação sem subquery.
 const autocompleteSQL = `
-SELECT id, name, name_pt, collector_number, set_code, set_name, image_small_url
+SELECT id, name, name_pt, collector_number, set_code, set_name, image_small_url, priority
 FROM (
     (
       SELECT c.id, c.name::text AS name, COALESCE(c.name_pt, '') AS name_pt,
@@ -775,7 +775,7 @@ FROM (
           JOIN card_sets s2 ON s2.id = c2.set_id
           WHERE (c2.name ILIKE $1 || '%' OR c2.name_pt ILIKE $1 || '%')
             AND ($3 = '' OR s2.tcg = $3)
-          LIMIT $2
+          -- sem LIMIT aqui: excluir TODOS os matches de prefixo para evitar duplicatas
       )
       AND (c.name % $1 OR c.name_pt % $1)
       AND ($3 = '' OR s.tcg = $3)
