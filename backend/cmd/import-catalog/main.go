@@ -3,259 +3,235 @@
 // do TCG (~30k entries).
 //
 // Uso:
-//   import-catalog              # importa todos os sets + cards
-//   import-catalog --set sv8    # importa só um set específico
-//   import-catalog --recent 5   # importa só os 5 sets mais recentes
+//
+//	import-catalog                    # importa todos os sets + cards
+//	import-catalog --set sv8          # importa só um set específico
+//	import-catalog --recent 5         # importa só os 5 sets mais recentes
+//	import-catalog --download-images  # baixa imagens para UPLOADS_DIR
 //
 // Idempotente: cards/sets já existentes são pulados (UNIQUE conflict tratado).
 //
 // Variáveis de ambiente:
-//   POKEMON_TCG_API_KEY  (opcional) — aumenta rate limit de 1k/dia para 20k/dia.
+//
+//	DATABASE_URL          (obrigatório)
+//	POKEMON_TCG_API_KEY   (opcional) — aumenta rate limit de 1k/dia para 20k/dia
+//	UPLOADS_DIR           (obrigatório com --download-images)
+//	UPLOADS_BASE_URL      (obrigatório com --download-images)
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"os"
+	"path"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
-	"github.com/gustavojucoski/mercadotcg/backend/internal/config"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/card"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/repository/postgres"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/upload"
 )
 
-const apiBase = "https://api.pokemontcg.io/v2"
-
 func main() {
+	// Flags
 	setCode := flag.String("set", "", "código de um set específico (ex.: sv8). Se vazio, importa todos.")
 	recent := flag.Int("recent", 0, "se > 0, importa só os N sets mais recentes.")
+	downloadImages := flag.Bool("download-images", false, "baixa imagens das cartas para UPLOADS_DIR")
 	flag.Parse()
 
-	cfg, err := config.Load()
-	if err != nil {
-		fail("config: %v", err)
-	}
+	// Logger em console para o CLI.
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// Configuração mínima — não usa config.Load() para evitar exigir JWT_SECRET.
+	_ = godotenv.Load() // ignora erro se .env não existir
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal().Msg("DATABASE_URL é obrigatório")
+	}
+	apiKey := os.Getenv("POKEMON_TCG_API_KEY") // opcional
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
-	pool, err := postgres.Connect(ctx, cfg.DatabaseURL)
+	pool, err := postgres.Connect(ctx, databaseURL)
 	if err != nil {
-		fail("connect postgres: %v", err)
+		log.Fatal().Err(err).Msg("connect postgres")
 	}
 	defer pool.Close()
 
 	repo := postgres.NewCardRepo(pool)
-	client := newAPIClient(cfg.PokemonTCGAPIKey)
+	client := pokemontcgio.New(30*time.Second, apiKey)
 
-	fmt.Println("==> Importando catálogo Pokemon TCG")
-
-	sets, err := client.fetchSets(ctx)
+	// Regras de variante — best-effort: usa vazio se não encontrar o arquivo.
+	rules, err := parseRules("variant_rules.json")
 	if err != nil {
-		fail("fetch sets: %v", err)
+		if errors.Is(err, os.ErrNotExist) {
+			log.Warn().Msg("variant_rules.json não encontrado — usando apenas finishes padrão")
+			rules = RuleMap{}
+		} else {
+			log.Fatal().Err(err).Msg("parseRules")
+		}
 	}
-	fmt.Printf("    %d sets encontrados na API\n", len(sets))
+
+	// Provider de upload (somente se --download-images).
+	var uploadProvider *upload.LocalProvider
+	if *downloadImages {
+		uploadsDir := os.Getenv("UPLOADS_DIR")
+		uploadsBaseURL := os.Getenv("UPLOADS_BASE_URL")
+		if uploadsDir == "" || uploadsBaseURL == "" {
+			log.Fatal().Msg("--download-images requer UPLOADS_DIR e UPLOADS_BASE_URL")
+		}
+		uploadProvider, err = upload.NewLocal(uploadsDir, uploadsBaseURL)
+		if err != nil {
+			log.Fatal().Err(err).Msg("criar LocalProvider")
+		}
+	}
+
+	log.Info().Msg("==> Importando catálogo Pokemon TCG")
+
+	sets, err := client.ListSets(ctx)
+	if err != nil {
+		log.Fatal().Err(err).Msg("fetch sets")
+	}
+	log.Info().Msgf("    %d sets encontrados na API", len(sets))
 
 	// Filtros: --set ou --recent.
 	if *setCode != "" {
 		sets = filterByCode(sets, *setCode)
 		if len(sets) == 0 {
-			fail("nenhum set encontrado com code=%q", *setCode)
+			log.Fatal().Msgf("nenhum set encontrado com code=%q", *setCode)
 		}
 	} else if *recent > 0 {
 		sets = mostRecent(sets, *recent)
 	}
 
+	// Canal para jobs de download de imagem (buffer = 200 para não bloquear o loop principal).
+	type imgJob struct {
+		cardID   uuid.UUID
+		setID    string
+		smallURL string
+		largeURL string
+	}
+	imgJobs := make(chan imgJob, 200)
+
+	// workerCtx é independente do ctx principal (que tem deadline de 60min para
+	// importação de sets). Downloads de imagem podem durar mais — e não devem ser
+	// cancelados só porque o loop de sets chegou perto do timeout.
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+
+	// Worker pool de imagens: só inicia se --download-images.
+	var wg sync.WaitGroup
+	if *downloadImages {
+		const numWorkers = 10
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				imgHTTP := &http.Client{Timeout: 30 * time.Second}
+				for job := range imgJobs {
+					cardIDStr := job.cardID.String()
+					newSmall, newLarge, err := downloadAndStore(workerCtx, imgHTTP, uploadProvider, cardIDStr, job.setID, job.smallURL, job.largeURL)
+					if err != nil {
+						log.Warn().Err(err).Str("card_id", cardIDStr).Msg("download imagem falhou")
+						continue
+					}
+					if err := repo.UpdateCardImages(workerCtx, job.cardID, newSmall, newLarge); err != nil {
+						log.Warn().Err(err).Str("card_id", cardIDStr).Msg("UpdateCardImages falhou")
+					}
+				}
+			}()
+		}
+	}
+
 	imported, skipped, cardsTotal := 0, 0, 0
 	for i, s := range sets {
-		fmt.Printf("[%d/%d] %s — %s\n", i+1, len(sets), s.ID, s.Name)
+		log.Info().Msgf("[%d/%d] %s — %s (%d cards)", i+1, len(sets), s.ID, s.Name, s.Total)
 
-		dbSet, err := upsertSet(ctx, repo, s)
-		if err != nil {
-			fmt.Printf("    erro no set %s: %v (pulando cards desse set)\n", s.ID, err)
-			continue
-		}
-		if errors.Is(err, postgres.ErrAlreadyExists) {
-			skipped++
+		dbSet, setErr := upsertSet(ctx, repo, s)
+		if setErr != nil {
+			if errors.Is(setErr, postgres.ErrAlreadyExists) {
+				skipped++
+				// Mesmo que o set já exista, continua para importar cards novos.
+			} else {
+				log.Error().Err(setErr).Str("set", s.ID).Msg("erro no set — pulando cards")
+				continue
+			}
 		} else {
 			imported++
 		}
 
-		cards, err := client.fetchCards(ctx, s.ID)
+		cards, err := client.ListCardsBySet(ctx, s.ID)
 		if err != nil {
-			fmt.Printf("    erro nos cards: %v\n", err)
+			log.Error().Err(err).Str("set", s.ID).Msg("erro nos cards")
 			continue
 		}
 
 		var inserted, conflicts int
 		for _, c := range cards {
-			if err := upsertCard(ctx, repo, dbSet.ID, c); err != nil {
+			cardID, err := upsertCard(ctx, repo, dbSet, s, c, rules)
+			if err != nil {
 				if errors.Is(err, postgres.ErrAlreadyExists) {
 					conflicts++
 					continue
 				}
-				fmt.Printf("    erro em %s: %v\n", c.Number, err)
+				log.Error().Err(err).Str("number", c.Number).Msg("erro na carta")
 				continue
 			}
 			inserted++
+
+			if *downloadImages && cardID != (uuid.UUID{}) {
+				imgJobs <- imgJob{
+					cardID:   cardID,
+					setID:    s.ID,
+					smallURL: c.SmallURL,
+					largeURL: c.LargeURL,
+				}
+			}
 		}
-		fmt.Printf("    %d cards novos, %d já existiam\n", inserted, conflicts)
+		log.Info().Msgf("    %d cards novos, %d já existiam", inserted, conflicts)
 		cardsTotal += inserted
 
-		// Rate limit conservador: pausa entre sets pra ser educado com a API.
+		// Pausa conservadora para respeitar o rate limit da API.
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	fmt.Println()
-	fmt.Printf("==> Concluído: %d sets novos, %d sets já existiam, %d cards novos\n",
+	// Sinaliza workers de imagem que não há mais jobs e aguarda conclusão.
+	close(imgJobs)
+	wg.Wait()
+	workerCancel() // libera o contexto dos workers após todos terminarem
+
+	log.Info().Msgf("==> Concluído: %d sets novos, %d sets já existiam, %d cards novos",
 		imported, skipped, cardsTotal)
-}
-
-// ----------------------------------------------------------------------------
-// Cliente HTTP da API
-// ----------------------------------------------------------------------------
-
-type apiClient struct {
-	http   *http.Client
-	apiKey string
-}
-
-func newAPIClient(apiKey string) *apiClient {
-	return &apiClient{
-		http:   &http.Client{Timeout: 30 * time.Second},
-		apiKey: apiKey,
-	}
-}
-
-func (a *apiClient) request(ctx context.Context, target string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	if a.apiKey != "" {
-		req.Header.Set("X-Api-Key", a.apiKey)
-	}
-	return a.http.Do(req)
-}
-
-// apiSet espelha o JSON dos sets na Pokemon TCG API.
-type apiSet struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Series       string `json:"series"`
-	PrintedTotal int    `json:"printedTotal"`
-	Total        int    `json:"total"`
-	ReleaseDate  string `json:"releaseDate"` // formato "YYYY/MM/DD"
-	Images       struct {
-		Logo   string `json:"logo"`
-		Symbol string `json:"symbol"`
-	} `json:"images"`
-}
-
-func (a *apiClient) fetchSets(ctx context.Context) ([]apiSet, error) {
-	var allSets []apiSet
-	page := 1
-	const pageSize = 250
-
-	for {
-		target := fmt.Sprintf("%s/sets?page=%d&pageSize=%d&orderBy=releaseDate", apiBase, page, pageSize)
-		resp, err := a.request(ctx, target)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return nil, fmt.Errorf("sets status %d", resp.StatusCode)
-		}
-		var body struct {
-			Data       []apiSet `json:"data"`
-			TotalCount int      `json:"totalCount"`
-		}
-		err = json.NewDecoder(resp.Body).Decode(&body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("decode sets: %w", err)
-		}
-		allSets = append(allSets, body.Data...)
-		if len(body.Data) < pageSize {
-			break
-		}
-		page++
-	}
-	return allSets, nil
-}
-
-// apiCard espelha cards. Só os campos usados.
-type apiCard struct {
-	ID        string   `json:"id"` // "sv8-199"
-	Name      string   `json:"name"`
-	Number    string   `json:"number"`
-	Rarity    string   `json:"rarity"`
-	Supertype string   `json:"supertype"`
-	Subtypes  []string `json:"subtypes"`
-	Types     []string `json:"types"`
-	HP        string   `json:"hp"` // string mesmo (algumas cartas não têm HP)
-	Artist    string   `json:"artist"`
-	Images    struct {
-		Small string `json:"small"`
-		Large string `json:"large"`
-	} `json:"images"`
-}
-
-func (a *apiClient) fetchCards(ctx context.Context, setID string) ([]apiCard, error) {
-	var all []apiCard
-	page := 1
-	const pageSize = 250
-
-	for {
-		q := url.QueryEscape(fmt.Sprintf("set.id:%s", setID))
-		target := fmt.Sprintf("%s/cards?q=%s&page=%d&pageSize=%d", apiBase, q, page, pageSize)
-		resp, err := a.request(ctx, target)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return nil, fmt.Errorf("cards status %d", resp.StatusCode)
-		}
-		var body struct {
-			Data []apiCard `json:"data"`
-		}
-		err = json.NewDecoder(resp.Body).Decode(&body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("decode cards: %w", err)
-		}
-		all = append(all, body.Data...)
-		if len(body.Data) < pageSize {
-			break
-		}
-		page++
-	}
-	return all, nil
 }
 
 // ----------------------------------------------------------------------------
 // Persistência
 // ----------------------------------------------------------------------------
 
-func upsertSet(ctx context.Context, repo *postgres.CardRepo, s apiSet) (card.Set, error) {
+// upsertSet garante que o set existe no banco. Retorna o set (existente ou novo)
+// e ErrAlreadyExists se já existia (para contabilização), ou nil se foi criado.
+func upsertSet(ctx context.Context, repo *postgres.CardRepo, s pokemontcgio.SetInfo) (card.Set, error) {
 	existing, err := repo.GetSetByCode(ctx, s.ID)
 	if err == nil {
+		// Set já existe — retorna com ErrAlreadyExists para o caller contabilizar.
 		return existing, postgres.ErrAlreadyExists
 	}
 	if !errors.Is(err, postgres.ErrNotFound) {
-		return card.Set{}, err
+		return card.Set{}, fmt.Errorf("get set by code: %w", err)
 	}
 
 	releaseDate := parseAPIDate(s.ReleaseDate)
@@ -263,23 +239,43 @@ func upsertSet(ctx context.Context, repo *postgres.CardRepo, s apiSet) (card.Set
 		Code:        s.ID,
 		Name:        s.Name,
 		Series:      s.Series,
-		Language:    card.LanguageEnglish, // Pokemon TCG API só tem inglês
+		TCG:         "pokemon",
+		Language:    card.LanguageEnglish,
 		ReleaseDate: releaseDate,
 		TotalCards:  s.Total,
-		ImageURL:    s.Images.Logo,
+		ImageURL:    s.LogoURL,
 	}
 	if err := repo.CreateSet(ctx, &dbSet); err != nil {
-		return card.Set{}, err
+		// Race condition: outro processo inseriu o set entre o GetSetByCode e o CreateSet.
+		// Busca o existente para devolver um set com ID válido.
+		if errors.Is(err, postgres.ErrAlreadyExists) {
+			existing, lookupErr := repo.GetSetByCode(ctx, s.ID)
+			if lookupErr != nil {
+				return card.Set{}, fmt.Errorf("upsertSet get existing after race: %w", lookupErr)
+			}
+			return existing, postgres.ErrAlreadyExists
+		}
+		return card.Set{}, fmt.Errorf("create set: %w", err)
 	}
 	return dbSet, nil
 }
 
-func upsertCard(ctx context.Context, repo *postgres.CardRepo, setID uuid.UUID, c apiCard) error {
-	// Construímos number como "199/191" pra match humano.
-	number := c.Number
+// upsertCard cria uma carta e suas variantes de acordo com as regras.
+// Retorna o ID interno da carta (uuid.UUID) para uso no download de imagens.
+// Retorna ErrAlreadyExists se a carta já existia.
+func upsertCard(
+	ctx context.Context,
+	repo *postgres.CardRepo,
+	dbSet card.Set,
+	s pokemontcgio.SetInfo,
+	c pokemontcgio.CatalogCard,
+	rules RuleMap,
+) (cardID uuid.UUID, err error) {
+	isPromo := strings.EqualFold(c.Rarity, "Promo")
+
 	dbCard := card.Card{
-		SetID:         setID,
-		Number:        number,
+		SetID:         dbSet.ID,
+		Number:        c.Number,
 		Name:          c.Name,
 		Rarity:        c.Rarity,
 		Supertype:     c.Supertype,
@@ -287,46 +283,135 @@ func upsertCard(ctx context.Context, repo *postgres.CardRepo, setID uuid.UUID, c
 		Types:         c.Types,
 		HP:            atoiOrZero(c.HP),
 		Illustrator:   c.Artist,
-		ImageSmallURL: c.Images.Small,
-		ImageLargeURL: c.Images.Large,
+		ImageSmallURL: c.SmallURL,
+		ImageLargeURL: c.LargeURL,
 		ExternalIDs: map[string]string{
 			"pokemon_tcg_io": c.ID,
 		},
 	}
 	if err := repo.CreateCard(ctx, &dbCard); err != nil {
-		return err
+		return uuid.UUID{}, err
 	}
 
-	// Cria pelo menos a variante "normal" pra cada carta. Variantes
-	// específicas (Master Ball, Reverse Holo etc.) ficam para o usuário ou
-	// scraper detectarem caso a caso.
-	v := card.Variant{
-		CardID: dbCard.ID,
-		Finish: card.FinishNormal,
-	}
-	if err := repo.CreateVariant(ctx, &v); err != nil && !errors.Is(err, postgres.ErrAlreadyExists) {
-		return err
+	// Resolve os finishes usando as regras.
+	finishes := resolveFinishes("pokemon", s.Series, c.Rarity, rules)
+
+	// Verifica se a carta tem número acima do printedTotal sem variante especial —
+	// pode indicar que a regra está faltando.
+	if s.PrintedTotal > 0 {
+		cardNum := atoiOrZero(c.Number)
+		if cardNum > s.PrintedTotal {
+			hasSpecial := false
+			for _, f := range finishes {
+				if f == "master_ball_mirror" || f == "poke_ball_mirror" {
+					hasSpecial = true
+					break
+				}
+			}
+			if !hasSpecial {
+				log.Warn().Msgf("[WARN] carta %s: number=%s > printedTotal=%d mas nenhuma variante especial foi criada (rarity=%q)",
+					c.ID, c.Number, s.PrintedTotal, c.Rarity)
+			}
+		}
 	}
 
-	// Heurística: se a raridade indica holo/reverse, cria também essas variantes.
-	rarityUpper := strings.ToUpper(c.Rarity)
-	if strings.Contains(rarityUpper, "HOLO") && !strings.Contains(rarityUpper, "REVERSE") {
-		holo := card.Variant{CardID: dbCard.ID, Finish: card.FinishHolo}
-		_ = repo.CreateVariant(ctx, &holo) // ignorando erro de duplicata
+	// Cria uma variante para cada finish resolvido.
+	for _, finishStr := range finishes {
+		v := card.Variant{
+			CardID:  dbCard.ID,
+			Finish:  card.Finish(finishStr),
+			IsPromo: isPromo,
+		}
+		if varErr := repo.CreateVariant(ctx, &v); varErr != nil && !errors.Is(varErr, postgres.ErrAlreadyExists) {
+			// Variante duplicada é aceitável em re-runs — erros reais logamos mas não abortamos.
+			log.Warn().Err(varErr).
+				Str("card", c.ID).
+				Str("finish", finishStr).
+				Msg("criar variante falhou")
+		}
 	}
-	if strings.Contains(rarityUpper, "REVERSE") {
-		rev := card.Variant{CardID: dbCard.ID, Finish: card.FinishReverseHolo}
-		_ = repo.CreateVariant(ctx, &rev)
+
+	return dbCard.ID, nil
+}
+
+// ----------------------------------------------------------------------------
+// Download de imagens
+// ----------------------------------------------------------------------------
+
+// downloadAndStore baixa smallURL e largeURL, salva no provider e retorna as
+// novas URLs públicas. Se o arquivo já existe no disco, pula o download
+// (idempotência: checa com os.Stat antes de gravar).
+func downloadAndStore(
+	ctx context.Context,
+	imgHTTP *http.Client,
+	provider *upload.LocalProvider,
+	cardID, setID, smallURL, largeURL string,
+) (newSmall, newLarge string, err error) {
+	newSmall, err = downloadOne(ctx, imgHTTP, provider, setID, cardID+"_small", smallURL)
+	if err != nil {
+		return "", "", fmt.Errorf("small: %w", err)
 	}
-	return nil
+	newLarge, err = downloadOne(ctx, imgHTTP, provider, setID, cardID+"_large", largeURL)
+	if err != nil {
+		return "", "", fmt.Errorf("large: %w", err)
+	}
+	return newSmall, newLarge, nil
+}
+
+// downloadOne baixa uma imagem e a armazena via provider.
+// A chave no provider é "cards/{setID}/{filename}.{ext}".
+// Se o arquivo já existir no disco, pula o download e retorna a URL existente
+// (idempotência em re-runs com --download-images).
+func downloadOne(
+	ctx context.Context,
+	imgHTTP *http.Client,
+	provider *upload.LocalProvider,
+	setID, filename, srcURL string,
+) (string, error) {
+	if srcURL == "" {
+		return "", nil
+	}
+
+	ext := filepath.Ext(path.Base(srcURL))
+	if ext == "" {
+		ext = ".png"
+	}
+	key := fmt.Sprintf("cards/%s/%s%s", setID, filename, ext)
+
+	// Idempotência: se o arquivo já existe no disco, retorna a URL pública sem
+	// fazer nenhuma requisição HTTP — preserva rate limit em re-runs.
+	destPath := filepath.Join(provider.Root(), filepath.FromSlash(key))
+	if _, err := os.Stat(destPath); err == nil {
+		return provider.PublicURL(key), nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srcURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := imgHTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download %s: status %d", srcURL, resp.StatusCode)
+	}
+
+	publicURL, err := provider.Put(ctx, key, io.Reader(resp.Body))
+	if err != nil {
+		return "", fmt.Errorf("put %s: %w", key, err)
+	}
+	return publicURL, nil
 }
 
 // ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------
 
-func filterByCode(sets []apiSet, code string) []apiSet {
-	var out []apiSet
+func filterByCode(sets []pokemontcgio.SetInfo, code string) []pokemontcgio.SetInfo {
+	var out []pokemontcgio.SetInfo
 	for _, s := range sets {
 		if s.ID == code {
 			out = append(out, s)
@@ -335,7 +420,7 @@ func filterByCode(sets []apiSet, code string) []apiSet {
 	return out
 }
 
-func mostRecent(sets []apiSet, n int) []apiSet {
+func mostRecent(sets []pokemontcgio.SetInfo, n int) []pokemontcgio.SetInfo {
 	sort.SliceStable(sets, func(i, j int) bool {
 		return sets[i].ReleaseDate > sets[j].ReleaseDate
 	})
@@ -360,17 +445,9 @@ func atoiOrZero(s string) int {
 	if s == "" {
 		return 0
 	}
-	var n int
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0
-		}
-		n = n*10 + int(r-'0')
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
 	}
 	return n
-}
-
-func fail(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "import-catalog: "+format+"\n", args...)
-	os.Exit(1)
 }
