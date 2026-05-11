@@ -48,6 +48,18 @@ func (p *LocalProvider) Put(_ context.Context, key string, r io.Reader) (string,
 	return p.baseURL + "/" + key, nil
 }
 
+// Root returns the absolute path to the upload root directory.
+// Useful for callers that need to check file existence before uploading.
+func (p *LocalProvider) Root() string {
+	return p.root
+}
+
+// PublicURL returns the public URL for a given key without writing any file.
+// Mirrors the URL that Put would return for the same key.
+func (p *LocalProvider) PublicURL(key string) string {
+	return p.baseURL + "/" + key
+}
+
 // FileServer returns an http.Handler that serves files from root.
 // Mount it at the same path prefix as baseURL, e.g.:
 //
