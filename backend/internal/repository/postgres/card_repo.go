@@ -565,7 +565,7 @@ LIMIT $3 OFFSET $4`
 // ListSetsByTCG lista sets paginados, filtrados por TCG e opcionalmente por série.
 // Retorna os sets e o total de linhas (para paginação do caller).
 func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid.UUID, page, limit int) ([]SetWithSeries, int, error) {
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 || limit > 500 {
 		limit = 30
 	}
 	if page < 1 {

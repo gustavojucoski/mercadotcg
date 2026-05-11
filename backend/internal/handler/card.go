@@ -346,8 +346,8 @@ func (h *CardHandler) listSetsByTCG(w http.ResponseWriter, r *http.Request) {
 
 	page := atoiOrDefault(q.Get("page"), 1)
 	limit := atoiOrDefault(q.Get("limit"), 30)
-	if limit > 100 {
-		limit = 100
+	if limit > 500 {
+		limit = 500
 	}
 
 	sets, total, err := h.cards.ListSetsByTCG(r.Context(), tcg, seriesID, page, limit)
