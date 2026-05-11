@@ -30,8 +30,8 @@ func NewCardRepo(pool *pgxpool.Pool) *CardRepo {
 // ----------------------------------------------------------------------------
 
 const insertSetSQL = `
-INSERT INTO card_sets (code, name, series, tcg, language, release_date, total_cards, image_url)
-VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, NULLIF($7, 0), NULLIF($8, ''))
+INSERT INTO card_sets (code, name, series, series_id, tcg, language, release_date, total_cards, image_url)
+VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, NULLIF($8, 0), NULLIF($9, ''))
 RETURNING id, created_at, updated_at`
 
 // CreateSet insere um novo set e devolve o ID gerado.
@@ -44,7 +44,7 @@ func (r *CardRepo) CreateSet(ctx context.Context, s *card.Set) error {
 	}
 
 	err := r.pool.QueryRow(ctx, insertSetSQL,
-		s.Code, s.Name, s.Series, tcg, string(s.Language),
+		s.Code, s.Name, s.Series, s.SeriesID, tcg, string(s.Language),
 		s.ReleaseDate, s.TotalCards, s.ImageURL,
 	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
 
@@ -59,9 +59,16 @@ func (r *CardRepo) CreateSet(ctx context.Context, s *card.Set) error {
 }
 
 const selectSetByCodeSQL = `
-SELECT id, code, name, COALESCE(series, ''), COALESCE(tcg, 'pokemon'), language, release_date,
-       COALESCE(total_cards, 0), COALESCE(image_url, ''), created_at, updated_at
-FROM card_sets WHERE code = $1`
+SELECT
+    cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''),
+    COALESCE(cr.name, cs.series, ''), COALESCE(cr.name_pt, ''),
+    cs.series_id,
+    COALESCE(cs.tcg, 'pokemon'), cs.language, cs.release_date,
+    COALESCE(cs.total_cards, 0), COALESCE(cs.image_url, ''),
+    cs.created_at, cs.updated_at
+FROM card_sets cs
+LEFT JOIN card_series cr ON cr.id = cs.series_id
+WHERE cs.code = $1`
 
 // GetSetByCode busca um set pelo seu code (ex.: "sv7").
 func (r *CardRepo) GetSetByCode(ctx context.Context, code string) (card.Set, error) {
@@ -69,7 +76,9 @@ func (r *CardRepo) GetSetByCode(ctx context.Context, code string) (card.Set, err
 	var lang string
 
 	err := r.pool.QueryRow(ctx, selectSetByCodeSQL, code).Scan(
-		&s.ID, &s.Code, &s.Name, &s.Series, &s.TCG, &lang, &s.ReleaseDate,
+		&s.ID, &s.Code, &s.Name, &s.NamePT,
+		&s.Series, &s.SeriesPT, &s.SeriesID,
+		&s.TCG, &lang, &s.ReleaseDate,
 		&s.TotalCards, &s.ImageURL, &s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -82,17 +91,94 @@ func (r *CardRepo) GetSetByCode(ctx context.Context, code string) (card.Set, err
 	return s, nil
 }
 
+const updateSetNamePTSQL = `
+UPDATE card_sets SET name_pt = $2, updated_at = now() WHERE id = $1`
+
+// UpdateSetNamePT atualiza a tradução PT-BR de um set.
+func (r *CardRepo) UpdateSetNamePT(ctx context.Context, id uuid.UUID, namePT string) error {
+	tag, err := r.pool.Exec(ctx, updateSetNamePTSQL, id, namePT)
+	if err != nil {
+		return fmt.Errorf("update set name_pt: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ----------------------------------------------------------------------------
+// Series
+// ----------------------------------------------------------------------------
+
+const upsertSeriesSQL = `
+INSERT INTO card_series (name, tcg)
+VALUES ($1, $2)
+ON CONFLICT (name, tcg) DO UPDATE SET name = EXCLUDED.name -- no-op: força RETURNING a devolver a linha existente
+RETURNING id, name, COALESCE(name_pt, ''), tcg, created_at`
+
+// UpsertSeries garante que a série existe e retorna o objeto com ID.
+func (r *CardRepo) UpsertSeries(ctx context.Context, name, tcg string) (card.Series, error) {
+	var s card.Series
+	err := r.pool.QueryRow(ctx, upsertSeriesSQL, name, tcg).Scan(
+		&s.ID, &s.Name, &s.NamePT, &s.TCG, &s.CreatedAt,
+	)
+	if err != nil {
+		return card.Series{}, fmt.Errorf("upsert series: %w", err)
+	}
+	return s, nil
+}
+
+const updateSeriesNamePTSQL = `
+UPDATE card_series SET name_pt = $2 WHERE id = $1`
+
+// UpdateSeriesNamePT atualiza a tradução PT-BR de uma série.
+func (r *CardRepo) UpdateSeriesNamePT(ctx context.Context, id uuid.UUID, namePT string) error {
+	tag, err := r.pool.Exec(ctx, updateSeriesNamePTSQL, id, namePT)
+	if err != nil {
+		return fmt.Errorf("update series name_pt: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const listSeriesSQL = `
+SELECT id, name, COALESCE(name_pt, ''), tcg, created_at
+FROM card_series
+WHERE ($1 = '' OR tcg = $1)
+ORDER BY tcg, name`
+
+// ListSeries lista séries, opcionalmente filtradas por TCG.
+func (r *CardRepo) ListSeries(ctx context.Context, tcg string) ([]card.Series, error) {
+	rows, err := r.pool.Query(ctx, listSeriesSQL, tcg)
+	if err != nil {
+		return nil, fmt.Errorf("list series: %w", err)
+	}
+	defer rows.Close()
+
+	var out []card.Series
+	for rows.Next() {
+		var s card.Series
+		if err := rows.Scan(&s.ID, &s.Name, &s.NamePT, &s.TCG, &s.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan series: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // ----------------------------------------------------------------------------
 // Cards
 // ----------------------------------------------------------------------------
 
 const insertCardSQL = `
 INSERT INTO cards (
-    set_id, number, name, rarity, supertype, subtypes, types,
+    set_id, number, collector_number, name, name_pt, rarity, supertype, subtypes, types,
     hp, illustrator, image_small_url, image_large_url, external_ids
 ) VALUES (
-    $1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7,
-    NULLIF($8, 0), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), $12
+    $1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''), $8, $9,
+    NULLIF($10, 0), NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), $14
 )
 RETURNING id, created_at, updated_at`
 
@@ -104,7 +190,8 @@ func (r *CardRepo) CreateCard(ctx context.Context, c *card.Card) error {
 	}
 
 	err := r.pool.QueryRow(ctx, insertCardSQL,
-		c.SetID, c.Number, c.Name, c.Rarity, c.Supertype, c.Subtypes, c.Types,
+		c.SetID, c.Number, c.CollectorNumber, c.Name, c.NamePT,
+		c.Rarity, c.Supertype, c.Subtypes, c.Types,
 		c.HP, c.Illustrator, c.ImageSmallURL, c.ImageLargeURL, external,
 	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
 
@@ -119,7 +206,7 @@ func (r *CardRepo) CreateCard(ctx context.Context, c *card.Card) error {
 }
 
 const selectCardByIDSQL = `
-SELECT id, set_id, number, name::text,
+SELECT id, set_id, number, COALESCE(collector_number, ''), name::text, COALESCE(name_pt, ''),
        COALESCE(rarity, ''), COALESCE(supertype, ''),
        COALESCE(subtypes, '{}'::text[]), COALESCE(types, '{}'::text[]),
        COALESCE(hp, 0), COALESCE(illustrator, ''),
@@ -131,7 +218,7 @@ FROM cards WHERE id = $1`
 func (r *CardRepo) GetCardByID(ctx context.Context, id uuid.UUID) (card.Card, error) {
 	var c card.Card
 	err := r.pool.QueryRow(ctx, selectCardByIDSQL, id).Scan(
-		&c.ID, &c.SetID, &c.Number, &c.Name,
+		&c.ID, &c.SetID, &c.Number, &c.CollectorNumber, &c.Name, &c.NamePT,
 		&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
 		&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
 		&c.ExternalIDs, &c.CreatedAt, &c.UpdatedAt,
@@ -146,14 +233,14 @@ func (r *CardRepo) GetCardByID(ctx context.Context, id uuid.UUID) (card.Card, er
 }
 
 const searchCardsByNameSQL = `
-SELECT id, set_id, number, name::text,
+SELECT id, set_id, number, COALESCE(collector_number, ''), name::text, COALESCE(name_pt, ''),
        COALESCE(rarity, ''), COALESCE(supertype, ''),
        COALESCE(subtypes, '{}'::text[]), COALESCE(types, '{}'::text[]),
        COALESCE(hp, 0), COALESCE(illustrator, ''),
        COALESCE(image_small_url, ''), COALESCE(image_large_url, ''),
        external_ids, created_at, updated_at
 FROM cards
-WHERE name % $1                       -- pg_trgm similarity
+WHERE name % $1
 ORDER BY similarity(name, $1) DESC
 LIMIT $2`
 
@@ -166,20 +253,24 @@ LIMIT $2`
 // primeiro quando o usuário digita só o nome.
 const lookupCardsSQL = `
 SELECT
-    c.id, c.set_id, c.number, c.name::text,
+    c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
     COALESCE(c.rarity, ''), COALESCE(c.supertype, ''),
     COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
     COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
     COALESCE(c.image_small_url, ''), COALESCE(c.image_large_url, ''),
     c.external_ids, c.created_at, c.updated_at,
-    s.id, s.code, s.name, COALESCE(s.series, ''), COALESCE(s.tcg, 'pokemon'),
+    s.id, s.code, s.name, COALESCE(s.name_pt, ''),
+    COALESCE(cr.name, s.series, ''), COALESCE(cr.name_pt, ''),
+    s.series_id,
+    COALESCE(s.tcg, 'pokemon'),
     s.language, s.release_date,
     COALESCE(s.total_cards, 0), COALESCE(s.image_url, ''), s.created_at, s.updated_at
 FROM cards c
 JOIN card_sets s ON s.id = c.set_id
+LEFT JOIN card_series cr ON cr.id = s.series_id
 WHERE
     (NULLIF($1, '') IS NULL OR c.name % $1)
-    AND (NULLIF($2, '') IS NULL OR c.number = $2)
+    AND (NULLIF($2, '') IS NULL OR c.number = $2 OR c.collector_number = $2)
     AND (NULLIF($3, '') IS NULL OR s.code = $3)
 ORDER BY
     CASE WHEN $1 <> '' THEN similarity(c.name::text, $1) ELSE 1.0 END DESC,
@@ -209,12 +300,16 @@ func (r *CardRepo) LookupCards(
 		var cw card.CardWithSet
 		var lang string
 		if err := rows.Scan(
-			&cw.Card.ID, &cw.Card.SetID, &cw.Card.Number, &cw.Card.Name,
+			&cw.Card.ID, &cw.Card.SetID, &cw.Card.Number, &cw.Card.CollectorNumber,
+			&cw.Card.Name, &cw.Card.NamePT,
 			&cw.Card.Rarity, &cw.Card.Supertype, &cw.Card.Subtypes, &cw.Card.Types,
 			&cw.Card.HP, &cw.Card.Illustrator, &cw.Card.ImageSmallURL, &cw.Card.ImageLargeURL,
 			&cw.Card.ExternalIDs, &cw.Card.CreatedAt, &cw.Card.UpdatedAt,
-			&cw.Set.ID, &cw.Set.Code, &cw.Set.Name, &cw.Set.Series, &cw.Set.TCG,
-			&lang, &cw.Set.ReleaseDate, &cw.Set.TotalCards, &cw.Set.ImageURL,
+			&cw.Set.ID, &cw.Set.Code, &cw.Set.Name, &cw.Set.NamePT,
+			&cw.Set.Series, &cw.Set.SeriesPT, &cw.Set.SeriesID,
+			&cw.Set.TCG,
+			&lang, &cw.Set.ReleaseDate,
+			&cw.Set.TotalCards, &cw.Set.ImageURL,
 			&cw.Set.CreatedAt, &cw.Set.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan card+set: %w", err)
@@ -242,7 +337,7 @@ func (r *CardRepo) SearchCardsByName(ctx context.Context, q string, limit int) (
 	for rows.Next() {
 		var c card.Card
 		if err := rows.Scan(
-			&c.ID, &c.SetID, &c.Number, &c.Name,
+			&c.ID, &c.SetID, &c.Number, &c.CollectorNumber, &c.Name, &c.NamePT,
 			&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
 			&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
 			&c.ExternalIDs, &c.CreatedAt, &c.UpdatedAt,
@@ -264,6 +359,21 @@ func (r *CardRepo) UpdateCardImages(ctx context.Context, cardID uuid.UUID, small
 	tag, err := r.pool.Exec(ctx, updateCardImagesSQL, cardID, smallURL, largeURL)
 	if err != nil {
 		return fmt.Errorf("update card images: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const updateCardNamePTSQL = `
+UPDATE cards SET name_pt = $2, updated_at = now() WHERE id = $1`
+
+// UpdateCardNamePT atualiza a tradução PT-BR de uma carta.
+func (r *CardRepo) UpdateCardNamePT(ctx context.Context, id uuid.UUID, namePT string) error {
+	tag, err := r.pool.Exec(ctx, updateCardNamePTSQL, id, namePT)
+	if err != nil {
+		return fmt.Errorf("update card name_pt: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
