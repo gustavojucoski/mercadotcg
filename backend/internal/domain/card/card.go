@@ -9,6 +9,15 @@ import (
 	"github.com/google/uuid"
 )
 
+// Series representa uma linha de sets de um TCG (ex.: "Scarlet & Violet").
+type Series struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	NamePT    string    `json:"name_pt,omitempty"`
+	TCG       string    `json:"tcg"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Set representa uma coleção/expansão de um TCG.
 // O campo TCG identifica o jogo ao qual o set pertence (ex.: "pokemon", "magic").
 type Set struct {
@@ -16,6 +25,9 @@ type Set struct {
 	Code        string     `json:"code"`
 	Name        string     `json:"name"`
 	Series      string     `json:"series,omitempty"`
+	SeriesID    *uuid.UUID `json:"-"`                   // FK interna, não exposta no JSON
+	SeriesPT    string     `json:"series_pt,omitempty"` // nome PT-BR da série (via JOIN)
+	NamePT      string     `json:"name_pt,omitempty"`   // nome PT-BR do set
 	TCG         string     `json:"tcg"`
 	Language    Language   `json:"language"`
 	ReleaseDate *time.Time `json:"release_date,omitempty"`
@@ -37,10 +49,12 @@ const (
 // Card representa uma carta de TCG, identificada por (set, número).
 // As variações de acabamento (holo, master ball, etc.) ficam em Variant.
 type Card struct {
-	ID            uuid.UUID         `json:"id"`
-	SetID         uuid.UUID         `json:"set_id"`
-	Number        string            `json:"number"`
-	Name          string            `json:"name"`
+	ID              uuid.UUID         `json:"id"`
+	SetID           uuid.UUID         `json:"set_id"`
+	Number          string            `json:"number"`
+	CollectorNumber string            `json:"collector_number,omitempty"`
+	NamePT          string            `json:"name_pt,omitempty"`
+	Name            string            `json:"name"`
 	Rarity        string            `json:"rarity,omitempty"`
 	Supertype     string            `json:"supertype,omitempty"`
 	Subtypes      []string          `json:"subtypes,omitempty"`
