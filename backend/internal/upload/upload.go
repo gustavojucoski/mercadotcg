@@ -4,6 +4,7 @@ package upload
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,16 @@ import (
 
 // Provider stores a file and returns its public URL.
 type Provider interface {
-	Put(ctx context.Context, key string, r io.Reader) (publicURL string, err error)
+	// Put stores r under key and returns the public URL.
+	// contentType is required for S3 (Content-Type header); LocalProvider ignores it.
+	Put(ctx context.Context, key string, r io.Reader, contentType string) (publicURL string, err error)
+
+	// PublicURL returns the public URL for key without writing any file.
+	PublicURL(key string) string
+
+	// Exists reports whether key has already been stored.
+	// Returns (false, nil) for a missing key; (false, err) for I/O errors.
+	Exists(ctx context.Context, key string) (bool, error)
 }
 
 // LocalProvider writes files to a directory on disk and serves them statically.
@@ -31,7 +41,8 @@ func NewLocal(root, baseURL string) (*LocalProvider, error) {
 }
 
 // Put writes r to root/key and returns baseURL/key as the public URL.
-func (p *LocalProvider) Put(_ context.Context, key string, r io.Reader) (string, error) {
+// contentType is ignored — LocalProvider stores raw bytes regardless of MIME.
+func (p *LocalProvider) Put(_ context.Context, key string, r io.Reader, _ string) (string, error) {
 	dest := filepath.Join(p.root, filepath.FromSlash(key))
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", fmt.Errorf("upload: mkdir: %w", err)
@@ -49,15 +60,26 @@ func (p *LocalProvider) Put(_ context.Context, key string, r io.Reader) (string,
 }
 
 // Root returns the absolute path to the upload root directory.
-// Useful for callers that need to check file existence before uploading.
 func (p *LocalProvider) Root() string {
 	return p.root
 }
 
 // PublicURL returns the public URL for a given key without writing any file.
-// Mirrors the URL that Put would return for the same key.
 func (p *LocalProvider) PublicURL(key string) string {
 	return p.baseURL + "/" + key
+}
+
+// Exists reports whether key exists on disk.
+func (p *LocalProvider) Exists(_ context.Context, key string) (bool, error) {
+	dest := filepath.Join(p.root, filepath.FromSlash(key))
+	_, err := os.Stat(dest)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("upload: stat %s: %w", key, err)
 }
 
 // FileServer returns an http.Handler that serves files from root.
@@ -66,4 +88,53 @@ func (p *LocalProvider) PublicURL(key string) string {
 //	r.Handle("/uploads/*", http.StripPrefix("/uploads", p.FileServer()))
 func (p *LocalProvider) FileServer() http.Handler {
 	return http.FileServer(http.Dir(p.root))
+}
+
+// NewFromEnv constructs a Provider from environment variables.
+//
+// STORAGE_BACKEND: "local" (default) | "s3"
+//
+// Local backend:
+//
+//	STORAGE_LOCAL_PATH     — root directory (default: "./data/images")
+//	STORAGE_LOCAL_BASE_URL — public URL prefix (required)
+//
+// S3 backend:
+//
+//	S3_BUCKET             — bucket name (required)
+//	S3_REGION             — AWS region (default: "us-east-1")
+//	STORAGE_S3_CUSTOM_URL — CloudFront or custom origin URL (optional)
+func NewFromEnv() (Provider, error) {
+	backend := os.Getenv("STORAGE_BACKEND")
+	if backend == "" {
+		backend = "local"
+	}
+
+	switch backend {
+	case "local":
+		root := os.Getenv("STORAGE_LOCAL_PATH")
+		if root == "" {
+			root = "./data/images"
+		}
+		baseURL := os.Getenv("STORAGE_LOCAL_BASE_URL")
+		if baseURL == "" {
+			return nil, fmt.Errorf("upload: STORAGE_LOCAL_BASE_URL é obrigatório para backend local")
+		}
+		return NewLocal(root, baseURL)
+
+	case "s3":
+		bucket := os.Getenv("S3_BUCKET")
+		if bucket == "" {
+			return nil, fmt.Errorf("upload: S3_BUCKET é obrigatório para backend s3")
+		}
+		region := os.Getenv("S3_REGION")
+		if region == "" {
+			region = "us-east-1"
+		}
+		customURL := os.Getenv("STORAGE_S3_CUSTOM_URL")
+		return NewS3(bucket, region, customURL)
+
+	default:
+		return nil, fmt.Errorf("upload: STORAGE_BACKEND desconhecido: %q (use \"local\" ou \"s3\")", backend)
+	}
 }
