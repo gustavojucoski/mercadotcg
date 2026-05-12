@@ -136,6 +136,9 @@ MercadoTCG/
 │   │   │   ├── tcgplayer/      # legado — não registrado no main.go
 │   │   │   └── cardmarket/     # legado (FlareSolverr) — não registrado no main.go
 │   │   ├── pokemontcgio/   # client pokemontcg.io: FindCard (preços), ListSets, ListCardsBySet, requestWithRetry (catálogo)
+│   │   ├── upload/
+│   │   │   ├── upload.go   # Provider interface (Put/PublicURL/Exists) + LocalProvider + NewFromEnv
+│   │   │   └── s3.go       # S3Provider (aws-sdk-go-v2, ACL public-read, HeadObject para Exists)
 │   │   └── forex/          # BCBProvider (PTAX OData), Service com cache+fallback 7 dias
 │   └── migrations/
 │       ├── 000001 — extensions (pgcrypto, citext, pg_trgm)
@@ -167,11 +170,29 @@ MercadoTCG/
     │       ├── callback/page.tsx       # Google OAuth callback: lê ?access_token=&refresh_token=
     │       ├── forgot-password/page.tsx
     │       └── reset-password/page.tsx # Lê ?token=
+    ├── app/
+    │   ├── sitemap.ts         # sitemap dinâmico: raiz + /sets + sets do pokemontcg
+    │   ├── sets/
+    │   │   ├── page.tsx       # hub de TCGs (cards por jogo)
+    │   │   └── [tcg]/
+    │   │       ├── page.tsx   # listagem de sets do TCG com SetFilter
+    │   │       └── [code]/
+    │   │           └── page.tsx # grade de cartas do set via fetchAllSetCards + CardGridFilter
+    │   └── cards/
+    │       └── [slug]/
+    │           └── page.tsx   # detalhe da carta: info, variantes, preços NM, JSON-LD
     ├── components/
     │   ├── AuthProvider.tsx   # contexto {user, loading, clearAuth, refresh}; hidrata token no mount
-    │   ├── SiteHeader.tsx     # Logo + nav inline (Busca Externa, Lojas — só para platform_admin) + UserMenu
+    │   ├── SiteHeader.tsx     # Logo + nav inline + GlobalSearch + UserMenu; "Minha Loja" condicional por getMyStores()
     │   ├── UserMenu.tsx       # Dropdown: unauthenticated → Entrar▾; authenticated → nome+avatar, Minha conta, Sair
-    │   ├── SearchForm.tsx     # SetCombobox + número da carta
+    │   ├── GlobalSearch.tsx   # autocomplete com debounce 300ms, teclado (↑↓ Enter Esc), ARIA combobox
+    │   ├── Breadcrumb.tsx     # nav breadcrumb genérico
+    │   ├── SetFilter.tsx      # grid de sets com filtro por série e busca por nome
+    │   ├── SetCard.tsx        # card de set (imagem, nome, data, total_cards)
+    │   ├── CardGridFilter.tsx # filtro client-side (nome/número normalizado, raridades dinâmicas), grid + lista
+    │   ├── CardThumbnail.tsx  # thumbnail de carta com link para /cards/{slug}
+    │   ├── VariantTabs.tsx    # tabs de variantes na página de detalhe
+    │   ├── SearchForm.tsx     # SetCombobox + número da carta (busca externa admin)
     │   ├── SetCombobox.tsx    # combobox filtrável de sets (pokemontcg.io)
     │   ├── CardInfo.tsx
     │   ├── PriceMatrix.tsx    # tabela condição × fonte
@@ -179,7 +200,8 @@ MercadoTCG/
     │   ├── SourceCard.tsx     # accordion por fonte
     │   └── ConditionBadge.tsx
     └── lib/
-        ├── types.ts           # tipos espelhando respostas do backend
+        ├── types.ts           # tipos espelhando respostas do backend (catálogo + auth + pricing)
+        ├── catalog.ts         # fetchSeries, fetchSets, fetchSet, fetchSetCards, fetchAllSetCards, fetchCard, autocompleteCards
         ├── api.ts             # authedFetch (retry 401→refresh), searchCard()
         ├── auth.ts            # login, register, logout, refreshAccessToken, fetchCurrentUser
         ├── sets.ts            # useSets() — cache em memória
@@ -282,6 +304,17 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 **Trade-off aceito:** Sem validação no nível de tipo Go — usar constantes exportadas no domain para evitar typos.
 **Revisão:** Se o número de TCGs ultrapassar 10 e a CHECK constraint virar ruído, remover constraint e confiar na camada de aplicação, ou migrar para tabela de lookup `tcg_games`.
 
+### ADR-023 — upload.Provider: interface polimórfica Local + S3
+**Decisão:** `upload.Provider` define `Put(ctx, key, r, contentType)`, `PublicURL(key)` e `Exists(ctx, key)`. `LocalProvider` implementa para dev (armazena em disco, serve via `http.FileServer`). `S3Provider` implementa para prod (aws-sdk-go-v2, ACL `public-read`). `NewFromEnv()` seleciona o backend via `STORAGE_BACKEND=local|s3`.
+**Razão:** Permite que `import-catalog --download-images` e os handlers de upload de logo usem a mesma interface sem conhecer o backend de storage.
+**Chave de storage:** `{tcg}/cards/{setCode}/{collectorNumberSafe}_{size}.{ext}` para cartas; `{tcg}/sets/{setCode}.{ext}` para logos de set; `logos/{uuid}.{ext}` para logos de loja.
+**Gotcha S3:** AWS desabilita ACLs em buckets novos por padrão (Block Public Access). Requer desabilitar `BlockPublicAcls` e `BlockPublicPolicy` no bucket antes de usar `public-read`.
+
+### ADR-024 — Slug de carta: `{setCode}-{collectorNumber}`
+**Decisão:** A URL de detalhe de carta usa o slug `{setCode}-{collectorNumber}` (ex: `sv1-1`, `base1-4`). O handler `GET /cards/{slug}` tenta UUID primeiro; se falhar, faz split no **primeiro** hífen para extrair setCode e collectorNumber. A query SQL aceita `"1"` == `"001"` via cast numérico com guard regex `~ '^\d+$'`.
+**Razão:** URLs legíveis e indexáveis por motores de busca; não expõe UUIDs internos ao público.
+**Trade-off:** Set codes nunca devem conter hífen. Se TCGs futuros tiverem set codes com hífen (ex: `op-01` de One Piece), o slug precisará de um separador diferente ou encoding.
+
 ### ADR-019 — Navegação via hover dropdowns no SiteHeader
 **Decisão:** "Minha Loja" e "Admin" são botões com hover dropdown no `SiteHeader`. "Admin" expande para "Busca Externa" e "Lojas". "Minha Loja" expande para as abas da loja corrente (Perfil, Membros, Selados, Singles) quando o pathname está em `/lojas/{id}/*`, ou para "Ir para minha loja" caso contrário. O `UserMenu` serve apenas para ações do usuário (conta, logout).
 **Razão:** Dropdowns contextuais permitem navegar entre páginas da loja e retornar ao app global sem depender do botão voltar do browser.
@@ -291,7 +324,7 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 
 ## 5. Status Atual
 
-**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação de Pokémon TCG + campos PT-BR (series, set, card) + collector_number.
+**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação de Pokémon TCG + campos PT-BR + **catálogo público navegável** (hub de TCGs, listagem de sets, grid de cartas com filtro client-side, página de detalhe com variantes e preços, autocomplete global, sitemap).
 
 ### Migrations (000001–000013)
 
@@ -327,7 +360,13 @@ POST /api/v1/auth/refresh
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me               (RequireAuth)
 
-# Catálogo (público)
+# Catálogo (público — sem autenticação)
+GET  /api/v1/series?tcg=pokemon                 # lista séries
+GET  /api/v1/sets/{tcg}?series_id=&page=&limit= # lista sets paginados (limit máx 500)
+GET  /api/v1/sets/{tcg}/{code}                  # detalhe do set
+GET  /api/v1/sets/{tcg}/{code}/cards?page=&limit= # cartas do set (limit máx 200)
+GET  /api/v1/cards/autocomplete?q=&tcg=&limit=  # sugestões de busca (trgm)
+GET  /api/v1/cards/{slug}                       # detalhe da carta; slug = UUID | {setCode}-{collectorNumber}
 GET  /api/v1/cards/search
 GET  /api/v1/cards/lookup
 
@@ -403,35 +442,21 @@ GET  /api/v1/variants/{id}/signal
 | `/lojas/[id]/membros` | membro da loja | Gestão de membros (admin: adicionar/remover/alterar role) |
 | `/lojas/[id]/selados` | membro da loja | Placeholder — estoque de selados |
 | `/lojas/[id]/singles` | membro da loja | Placeholder — estoque de singles (multi-TCG futuro) |
+| `/sets` | público | Hub de TCGs disponíveis |
+| `/sets/[tcg]` | público | Listagem de sets do TCG com filtro por série e busca |
+| `/sets/[tcg]/[code]` | público | Grade de cartas do set — filtro por nome/número/raridade (client-side, sem paginação) |
+| `/cards/[slug]` | público | Detalhe da carta: variantes, preços NM, JSON-LD, breadcrumb |
 
 ## 6. Próximos Passos (priorizados)
 
-1. **Limpar banco local** — executar DELETE nas tabelas com dados de demo do antigo seed (ver SQL abaixo). Depois aplicar migration 000013: `go run ./cmd/migrate up`.
-2. **Rodar importação completa do catálogo** — `DATABASE_URL=... go run ./cmd/import-catalog` (ou com `POKEMON_TCG_API_KEY` para 20k req/dia). Popula `card_series`, `card_sets`, `cards` e `card_variants` com dados reais de todos os sets de Pokémon TCG. `collector_number` é preenchido automaticamente.
-3. **Preencher traduções PT-BR** — após a importação, usar `PATCH /api/v1/admin/series/{id}/name-pt` e `PATCH /api/v1/admin/sets/{id}/name-pt` para as séries/sets mais usados.
-4. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso o `pricesignal` nunca atualiza com preços reais dos scrapers.
-5. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`.
-6. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
-7. **Frontend estoque de singles** — `/lojas/[id]/singles` com cadastro de cards. Usar `GET /api/v1/cards/search` para seleção; exibir `name_pt` e `series_pt` quando disponíveis, fallback para inglês.
-8. **Frontend estoque de selados** — `/lojas/[id]/selados` com cadastro de produtos selados (booster box, ETB, etc.).
-9. **Testes integrados** — `tests/integration` com `testcontainers-go` para repos críticos: `StockRepo` (transações, custo médio ponderado), `PriceDailyRepo.RebuildDay`, `forex.Service` com fake Provider.
-10. **Marketplace público** — listings, reservas e checkout. Entra integração de pagamentos (seção 9).
-
-### SQL de limpeza do banco local (dados do antigo seed)
-
-```sql
--- Rodar antes de aplicar migration 000013
-TRUNCATE price_daily, price_history CASCADE;
-DELETE FROM external_card_refs;
-DELETE FROM stock_movements;
-DELETE FROM stock_items;
-DELETE FROM store_members;
-DELETE FROM stores WHERE slug = 'mercado-do-gus';
-DELETE FROM card_variants;
-DELETE FROM cards;
-DELETE FROM card_sets WHERE code = 'sv8';
-DELETE FROM forex_rates WHERE source = 'seed';
-```
+1. **Preencher traduções PT-BR** — usar `PATCH /api/v1/admin/series/{id}/name-pt` e `PATCH /api/v1/admin/sets/{id}/name-pt` para as séries/sets mais usados. Prioridade: séries da era Scarlet & Violet e Sword & Shield.
+2. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso as páginas de detalhe de carta mostram "Sem preço" para todas as variantes.
+3. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`.
+4. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
+5. **Frontend estoque de singles** — `/lojas/[id]/singles` com cadastro de cards. Usar `GET /api/v1/sets/{tcg}` + `GET /api/v1/sets/{tcg}/{code}/cards` para seleção; exibir `name_pt` e `series_pt` quando disponíveis, fallback para inglês.
+6. **Frontend estoque de selados** — `/lojas/[id]/selados` com cadastro de produtos selados (booster box, ETB, etc.).
+7. **Testes integrados** — `tests/integration` com `testcontainers-go` para repos críticos: `StockRepo` (transações, custo médio ponderado), `PriceDailyRepo.RebuildDay`, `ListCardsBySetCode` (ordenação numérica), `GetCardBySetAndNumber` (normalização "001"=="1").
+8. **Marketplace público** — listings, reservas e checkout. Entra integração de pagamentos (seção 9).
 
 ## 7. Convenções
 
@@ -442,6 +467,10 @@ DELETE FROM forex_rates WHERE source = 'seed';
 - **Frontend**: App Router. Server component por padrão; `"use client"` só quando há estado/eventos/hooks. Auth guard centralizado em `app/admin/layout.tsx` — páginas filhas não duplicam o guard. `NEXT_PUBLIC_API_URL` via `.env.local`.
 - **Docker**: `cmd/migrate`, `cmd/seed` e `cmd/import-catalog` leem `DATABASE_URL` diretamente — **não usam `config.Load()`** (que exigiria JWT_SECRET e outras vars de auth desnecessárias nesses binários).
 - **Multi-TCG**: o sistema deve suportar qualquer TCG (não só Pokémon). Ao implementar qualquer feature de catálogo de cartas ou estoque de singles, modelar de forma agnóstica ao TCG (campo `tcg` ou similar). Não assumir Pokémon como padrão hard-coded.
+- **Slugs de carta**: formato `{setCode}-{collectorNumber}`. Set codes nunca devem conter hífen. Handler faz split no **primeiro** hífen; query SQL usa normalização numérica `~ '^\d+$'` para `"001"` == `"1"`.
+- **Upload**: usar sempre `upload.Provider` interface. `NewFromEnv()` seleciona local vs S3. Não instanciar `LocalProvider` ou `S3Provider` diretamente fora de `NewFromEnv`.
+- **Catálogo público**: endpoints `/series`, `/sets/*`, `/cards/*` são públicos (sem auth). `Cache-Control: public` nos responses. No frontend, `fetchAllSetCards` carrega tudo em paralelo — não usar paginação SSR em página de set.
+- **next.config.ts remotePatterns**: ao adicionar nova fonte de imagens externas, adicionar o domínio em `next.config.ts`. Imagens internas usam `<img>` com `eslint-disable` enquanto URLs externas não forem migradas para next/image.
 
 ## 8. O que NÃO está pronto
 
