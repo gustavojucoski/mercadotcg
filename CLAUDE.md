@@ -343,6 +343,7 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 | 000012 | `card_sets` + coluna `tcg VARCHAR(32) NOT NULL DEFAULT 'pokemon'` + CHECK constraint + índice (ADR-021) |
 | 000013 | `card_series` (séries como entidade própria: `name`, `name_pt`, `tcg`; UNIQUE `name+tcg`); FK `series_id` em `card_sets` com backfill automático; `name_pt TEXT` em `card_sets`; `collector_number TEXT NOT NULL DEFAULT ''` e `name_pt TEXT` em `cards`; índices hash em `collector_number` e btree em `series_id` (ADR-022) |
 | 000014 | `cards` — `SPLIT_PART(collector_number, '/', 1)` limpa dados existentes no formato `"274/217"` → `"274"`; dados inseridos por importações futuras já chegam limpos |
+| 000015 | `card_sets` + coluna `printed_total INTEGER` — total impresso no card (ex: 217 em Ascended Heroes), distinto de `total_cards` (295) que inclui secret rares; usado no autocomplete para filtrar "110/217" ao set correto; pokemontcg.io não fornece este campo para sets japoneses antigos — atualizar manualmente via SQL quando necessário |
 
 ### Endpoints HTTP disponíveis
 
@@ -472,7 +473,7 @@ GET  /api/v1/variants/{id}/signal
 - **Slugs de carta**: formato `{setCode}-{collectorNumber}`. Set codes nunca devem conter hífen. Handler faz split no **primeiro** hífen; query SQL usa normalização numérica `~ '^\d+$'` para `"001"` == `"1"`.
 - **Upload**: usar sempre `upload.Provider` interface. `NewFromEnv()` seleciona local vs S3. Não instanciar `LocalProvider` ou `S3Provider` diretamente fora de `NewFromEnv`.
 - **Catálogo público**: endpoints `/series`, `/sets/*`, `/cards/*` são públicos (sem auth). `Cache-Control: public` nos responses. No frontend, `fetchAllSetCards` carrega tudo em paralelo — não usar paginação SSR em página de set.
-- **Autocomplete (`/cards/autocomplete`)**: busca por prefixo em `name`, `name_pt` e `collector_number`. Para `collector_number`, usa `SPLIT_PART($1, '/', 1)` para tolerar o formato legado `"276/217"` — extrai apenas o número antes da barra antes do ILIKE.
+- **Autocomplete (`/cards/autocomplete`)**: busca por prefixo em `name`, `name_pt` e `collector_number`. Para `collector_number`, usa `SPLIT_PART($1, '/', 1)` para tolerar o formato `"110/217"` — extrai o número antes da barra para o ILIKE e, quando há denominador (ex: `/217`), filtra sets onde `COALESCE(printed_total, total_cards)::text LIKE '217%'`. Sets japoneses antigos onde pokemontcg.io não retorna `printedTotal` precisam de atualização manual de `printed_total` (`UPDATE card_sets SET printed_total = N WHERE code = 'xxx'`).
 - **next.config.ts remotePatterns**: ao adicionar nova fonte de imagens externas, adicionar o domínio em `next.config.ts`. Imagens internas usam `<img>` com `eslint-disable` enquanto URLs externas não forem migradas para next/image.
 
 ## 8. O que NÃO está pronto
