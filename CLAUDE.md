@@ -311,8 +311,8 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 **Gotcha S3:** AWS desabilita ACLs em buckets novos por padrão (Block Public Access). Requer desabilitar `BlockPublicAcls` e `BlockPublicPolicy` no bucket antes de usar `public-read`.
 
 ### ADR-024 — Slug de carta: `{setCode}-{collectorNumber}`
-**Decisão:** A URL de detalhe de carta usa o slug `{setCode}-{collectorNumber}` (ex: `sv1-1`, `base1-4`). O handler `GET /cards/{slug}` tenta UUID primeiro; se falhar, faz split no **primeiro** hífen para extrair setCode e collectorNumber. A query SQL aceita `"1"` == `"001"` via cast numérico com guard regex `~ '^\d+$'`.
-**Razão:** URLs legíveis e indexáveis por motores de busca; não expõe UUIDs internos ao público.
+**Decisão:** A URL de detalhe de carta usa o slug `{setCode}-{collectorNumber}` (ex: `sv1-1`, `base1-274`). O handler `GET /cards/{slug}` tenta UUID primeiro; se falhar, faz split no **primeiro** hífen para extrair setCode e collectorNumber. A query SQL aceita `"1"` == `"001"` via cast numérico com guard regex `~ '^\d+$'`. `collector_number` armazena apenas o número (`"274"`) — **nunca** `"274/217"`. O display `274/217` é composto no frontend via `collector_number + "/" + set.total_cards`.
+**Razão:** URLs legíveis e indexáveis; sem `/` no collector_number não há ambiguidade de path segment.
 **Trade-off:** Set codes nunca devem conter hífen. Se TCGs futuros tiverem set codes com hífen (ex: `op-01` de One Piece), o slug precisará de um separador diferente ou encoding.
 
 ### ADR-019 — Navegação via hover dropdowns no SiteHeader
@@ -342,6 +342,7 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 | 000010 | `store_audit_log` — id, store_id, changed_by, change_type, changes (JSONB), created_at; índice em (store_id, created_at DESC) |
 | 000012 | `card_sets` + coluna `tcg VARCHAR(32) NOT NULL DEFAULT 'pokemon'` + CHECK constraint + índice (ADR-021) |
 | 000013 | `card_series` (séries como entidade própria: `name`, `name_pt`, `tcg`; UNIQUE `name+tcg`); FK `series_id` em `card_sets` com backfill automático; `name_pt TEXT` em `card_sets`; `collector_number TEXT NOT NULL DEFAULT ''` e `name_pt TEXT` em `cards`; índices hash em `collector_number` e btree em `series_id` (ADR-022) |
+| 000014 | `cards` — `SPLIT_PART(collector_number, '/', 1)` limpa dados existentes no formato `"274/217"` → `"274"`; dados inseridos por importações futuras já chegam limpos |
 
 ### Endpoints HTTP disponíveis
 
