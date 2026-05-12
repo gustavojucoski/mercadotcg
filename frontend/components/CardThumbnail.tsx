@@ -1,5 +1,8 @@
+'use client'
+
 import Link from 'next/link'
 import type { CardInSet } from '@/lib/types'
+import { useLang } from '@/lib/locale'
 
 interface CardThumbnailProps {
   card: CardInSet
@@ -22,8 +25,9 @@ function rarityClass(rarity: string): string {
 }
 
 export function CardThumbnail({ card, setCode }: CardThumbnailProps) {
+  const { t } = useLang()
   const slug = `${setCode}-${card.collector_number}`
-  const displayName = card.name_pt && card.name_pt.length > 0 ? card.name_pt : card.name
+  const displayName = t(card.name, card.name_pt)
 
   return (
     <Link

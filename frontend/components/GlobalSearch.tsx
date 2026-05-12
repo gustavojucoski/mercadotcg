@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { autocompleteCards } from '@/lib/catalog'
 import type { AutocompleteItem } from '@/lib/types'
+import { useLang } from '@/lib/locale'
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value)
@@ -16,6 +17,7 @@ function useDebounce<T>(value: T, delay: number): T {
 
 export function GlobalSearch() {
   const router = useRouter()
+  const { t } = useLang()
   const [query, setQuery] = useState('')
   const [items, setItems] = useState<AutocompleteItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -81,8 +83,7 @@ export function GlobalSearch() {
     }
   }
 
-  const displayName = (item: AutocompleteItem) =>
-    item.name_pt && item.name_pt.length > 0 ? item.name_pt : item.name
+  const displayName = (item: AutocompleteItem) => t(item.name, item.name_pt)
 
   return (
     <div ref={containerRef} className="relative flex-1 max-w-sm">

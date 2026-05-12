@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import { UserMenu } from '@/components/UserMenu'
 import { useAuth } from '@/components/AuthProvider'
 import { GlobalSearch } from '@/components/GlobalSearch'
+import { LangToggle } from '@/components/LangToggle'
 import { getMyStores } from '@/lib/stores-admin'
 
 const LOJA_TABS = [
@@ -156,6 +157,7 @@ export function SiteHeader() {
           <GlobalSearch />
         </div>
 
+        <LangToggle />
         <UserMenu />
       </div>
     </header>

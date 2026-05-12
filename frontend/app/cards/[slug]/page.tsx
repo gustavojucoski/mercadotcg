@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { SiteHeader } from '@/components/SiteHeader'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { VariantTabs } from '@/components/VariantTabs'
+import { LocalizedText } from '@/components/LocalizedText'
 import { fetchCard } from '@/lib/catalog'
 
 export const revalidate = 3600
@@ -16,10 +17,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const data = await fetchCard(slug)
     const { card, set } = data
-    const name = card.name_pt && card.name_pt.length > 0 ? card.name_pt : card.name
-    const setName = set.name_pt && set.name_pt.length > 0 ? set.name_pt : set.name
-    const title = `${name} ${card.collector_number} — ${setName} | MercadoTCG`
-    const description = `Carta ${name} do set ${setName}. Número ${card.collector_number}, raridade ${card.rarity}. Veja preços e variantes.`
+    // SEO: always use EN names for consistent indexing
+    const title = `${card.name} ${card.collector_number} — ${set.name} | MercadoTCG`
+    const description = `Carta ${card.name} do set ${set.name}. Número ${card.collector_number}, raridade ${card.rarity}. Veja preços e variantes.`
     return {
       title,
       description,
@@ -61,10 +61,19 @@ export default async function CardDetailPage({ params }: Props) {
   if (!data) notFound()
 
   const { card, set, variants } = data
-  const cardName = card.name_pt && card.name_pt.length > 0 ? card.name_pt : card.name
-  const setName = set.name_pt && set.name_pt.length > 0 ? set.name_pt : set.name
-  const seriesName = set.series_pt && set.series_pt.length > 0 ? set.series_pt : set.series
+  // EN names used for SEO-critical schema.org and breadcrumb server-rendered labels
+  const cardNameEn = card.name
+  const cardNamePt = card.name_pt
+  const setNameEn = set.name
+  const setNamePt = set.name_pt
+  const seriesNameEn = set.series
+  const seriesNamePt = set.series_pt
   const tcg = set.tcg
+
+  // Breadcrumb uses PT when available (falls back to EN); hydrated server-side so
+  // it won't react to client toggle — acceptable trade-off for a nav element
+  const breadcrumbSetLabel = setNamePt && setNamePt.length > 0 ? setNamePt : setNameEn
+  const breadcrumbCardLabel = cardNamePt && cardNamePt.length > 0 ? cardNamePt : cardNameEn
 
   const lowestPrice = variants
     .map(v => v.price_summary?.min_brl)
@@ -75,9 +84,10 @@ export default async function CardDetailPage({ params }: Props) {
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Product',
-    name: cardName,
+    // JSON-LD always uses EN name for SEO
+    name: cardNameEn,
     image: card.image_large_url || card.image_small_url,
-    description: `Carta ${cardName} do set ${setName}. Número ${card.collector_number}, raridade ${card.rarity}.`,
+    description: `Carta ${cardNameEn} do set ${setNameEn}. Número ${card.collector_number}, raridade ${card.rarity}.`,
     offers: variants.map(v => ({
       '@type': 'Offer',
       priceCurrency: 'BRL',
@@ -102,8 +112,8 @@ export default async function CardDetailPage({ params }: Props) {
             { label: 'MercadoTCG', href: '/' },
             { label: 'Sets', href: '/sets' },
             { label: tcg === 'pokemon' ? 'Pokémon TCG' : tcg, href: `/sets/${tcg}` },
-            { label: setName, href: `/sets/${tcg}/${set.code}` },
-            { label: cardName },
+            { label: breadcrumbSetLabel, href: `/sets/${tcg}/${set.code}` },
+            { label: breadcrumbCardLabel },
           ]}
         />
 
@@ -112,16 +122,19 @@ export default async function CardDetailPage({ params }: Props) {
             <VariantTabs
               variants={variants}
               imageSrc={card.image_large_url || card.image_small_url}
-              imageAlt={cardName}
+              imageAlt={breadcrumbCardLabel}
             />
           </div>
 
           <div>
-            <h1 className="text-3xl font-bold text-zinc-900 dark:text-zinc-50 leading-tight">
-              {cardName}
-            </h1>
-            {card.name_pt && card.name_pt.length > 0 && (
-              <p className="text-zinc-400 mt-1">{card.name}</p>
+            <LocalizedText
+              en={cardNameEn}
+              pt={cardNamePt}
+              as="h1"
+              className="text-3xl font-bold text-zinc-900 dark:text-zinc-50 leading-tight"
+            />
+            {cardNamePt && cardNamePt.length > 0 && (
+              <p className="text-zinc-400 mt-1">{cardNameEn}</p>
             )}
 
             {lowestPrice && (
@@ -142,7 +155,7 @@ export default async function CardDetailPage({ params }: Props) {
                       href={`/sets/${tcg}/${set.code}`}
                       className="text-violet-600 dark:text-violet-400 hover:underline"
                     >
-                      {setName}
+                      <LocalizedText en={setNameEn} pt={setNamePt} />
                     </a>
                   </dd>
                 </div>
@@ -153,7 +166,7 @@ export default async function CardDetailPage({ params }: Props) {
                       href={`/sets/${tcg}`}
                       className="text-violet-600 dark:text-violet-400 hover:underline"
                     >
-                      {seriesName}
+                      <LocalizedText en={seriesNameEn} pt={seriesNamePt} />
                     </a>
                   </dd>
                 </div>
@@ -182,12 +195,12 @@ export default async function CardDetailPage({ params }: Props) {
                   <div className="flex items-start gap-2">
                     <dt className="w-32 shrink-0 text-sm text-zinc-400">Tipo</dt>
                     <dd className="flex gap-1.5 flex-wrap">
-                      {card.types.map(t => (
+                      {card.types.map(tp => (
                         <span
-                          key={t}
+                          key={tp}
                           className="rounded-full bg-zinc-100 dark:bg-zinc-800 px-2.5 py-0.5 text-xs font-medium text-zinc-700 dark:text-zinc-300"
                         >
-                          {t}
+                          {tp}
                         </span>
                       ))}
                     </dd>

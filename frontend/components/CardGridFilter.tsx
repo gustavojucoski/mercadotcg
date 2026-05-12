@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import type { CardInSet } from '@/lib/types'
 import { CardThumbnail } from '@/components/CardThumbnail'
+import { useLang } from '@/lib/locale'
 
 interface CardGridFilterProps {
   cards: CardInSet[]
@@ -19,6 +20,7 @@ export function CardGridFilter({ cards, setCode }: CardGridFilterProps) {
   const [query, setQuery] = useState('')
   const [selectedRarities, setSelectedRarities] = useState<Set<string>>(new Set())
   const [view, setView] = useState<'grid' | 'list'>('grid')
+  const { t } = useLang()
 
   const availableRarities = useMemo(() => {
     const seen = new Set<string>()
@@ -138,7 +140,7 @@ export function CardGridFilter({ cards, setCode }: CardGridFilterProps) {
         <div className="space-y-2">
           {filtered.map(card => {
             const slug = `${setCode}-${card.collector_number}`
-            const displayName = card.name_pt && card.name_pt.length > 0 ? card.name_pt : card.name
+            const displayName = t(card.name, card.name_pt)
             return (
               <Link
                 key={card.id}

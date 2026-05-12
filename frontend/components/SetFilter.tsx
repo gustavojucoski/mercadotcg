@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import type { TCGSet } from '@/lib/types'
 import { SetCard } from '@/components/SetCard'
+import { useLang } from '@/lib/locale'
 
 interface SetGroup {
   seriesId: string
@@ -44,6 +45,7 @@ interface SetFilterProps {
 
 export function SetFilter({ sets }: SetFilterProps) {
   const [query, setQuery] = useState('')
+  const { t } = useLang()
 
   const filtered = useMemo(() => {
     if (!query.trim()) return sets
@@ -91,10 +93,7 @@ export function SetFilter({ sets }: SetFilterProps) {
       ) : (
         <div className="space-y-10">
           {groups.map(group => {
-            const seriesLabel =
-              group.seriesNamePt && group.seriesNamePt.length > 0
-                ? group.seriesNamePt
-                : group.seriesName
+            const seriesLabel = t(group.seriesName, group.seriesNamePt)
 
             return (
               <section key={group.seriesId}>
