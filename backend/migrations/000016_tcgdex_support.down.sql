@@ -3,6 +3,9 @@
 DROP INDEX IF EXISTS idx_card_series_name_pt_trgm;
 DROP INDEX IF EXISTS idx_cards_name_pt_trgm;
 
+-- Remove pocket sets before restoring the old constraint (which doesn't allow 'pocket').
+DELETE FROM card_sets WHERE tcg = 'pocket';
+
 -- Restore the original CHECK constraint (without 'pocket').
 ALTER TABLE card_sets DROP CONSTRAINT IF EXISTS chk_card_sets_tcg;
 ALTER TABLE card_sets ADD CONSTRAINT chk_card_sets_tcg

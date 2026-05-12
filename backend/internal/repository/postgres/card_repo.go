@@ -94,6 +94,8 @@ ON CONFLICT (code) DO UPDATE SET
     series       = COALESCE(EXCLUDED.series, card_sets.series),
     series_id    = COALESCE(EXCLUDED.series_id, card_sets.series_id),
     tcg          = EXCLUDED.tcg,
+    release_date = COALESCE(EXCLUDED.release_date, card_sets.release_date),
+    language     = EXCLUDED.language,
     total_cards  = COALESCE(EXCLUDED.total_cards, card_sets.total_cards),
     printed_total= COALESCE(EXCLUDED.printed_total, card_sets.printed_total),
     image_url    = COALESCE(EXCLUDED.image_url, card_sets.image_url),

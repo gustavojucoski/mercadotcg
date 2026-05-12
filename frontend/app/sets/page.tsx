@@ -13,14 +13,27 @@ const TCG_LIST = [
   {
     id: 'pokemon',
     label: 'Pokémon TCG',
-    description: 'Mais de 170 sets desde Base Set até as expansões mais recentes.',
+    description: 'Mais de 190 sets desde Base Set até as expansões mais recentes.',
     href: '/sets/pokemon',
-    sets: '170+',
+    sets: '190+',
     color: 'from-yellow-400 to-red-500',
     icon: (
       <svg viewBox="0 0 24 24" className="size-10 text-white" fill="currentColor" aria-hidden="true">
         <circle cx="12" cy="12" r="10" opacity="0.2" />
         <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'pocket',
+    label: 'Pokémon TCG Pocket',
+    description: 'Sets exclusivos do aplicativo TCG Pocket com nomes em português.',
+    href: '/sets/pocket',
+    sets: '14+',
+    color: 'from-blue-400 to-indigo-600',
+    icon: (
+      <svg viewBox="0 0 24 24" className="size-10 text-white" fill="currentColor" aria-hidden="true">
+        <path d="M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2zm-5 18c-.83 0-1.5-.67-1.5-1.5S11.17 16 12 16s1.5.67 1.5 1.5S12.83 19 12 19zm5-4H7V4h10v11z" />
       </svg>
     ),
   },

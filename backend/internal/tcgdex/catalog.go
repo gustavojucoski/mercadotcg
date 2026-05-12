@@ -35,10 +35,10 @@ func EnrichSet(ctx context.Context, c *Client, setID string) (*BilingualSet, err
 
 	result := &BilingualSet{Set: *enSet}
 
-	ptSet, err := c.GetSet(ctx, "pt-br", setID)
-	if err != nil {
-		return nil, fmt.Errorf("enrich set %s (pt-br): %w", setID, err)
-	}
+	// PT-BR is optional enrichment; 404 is expected for non-Pocket sets.
+	// Any transient error (5xx, timeout) is silently ignored so the EN set
+	// is still persisted rather than skipped entirely.
+	ptSet, _ := c.GetSet(ctx, "pt-br", setID)
 	if ptSet != nil {
 		result.NamePT = ptSet.Name
 		if ptSet.Serie.Name != "" {
