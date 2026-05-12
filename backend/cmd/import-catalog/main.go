@@ -252,20 +252,27 @@ func importCards(
 
 	for _, ref := range cardRefs {
 		var namePT string
+		var fullCard *tcgdex.Card
+
 		if fetchPTBR {
+			// For TCG Pocket we fetch the full PT-BR card (which also has variant data).
 			ptCard, ferr := client.GetCard(ctx, "pt-br", ref.ID)
 			if ferr != nil {
 				log.Warn().Err(ferr).Str("card", ref.ID).Msg("pt-br card fetch failed")
 			} else if ptCard != nil {
 				namePT = ptCard.Name
 			}
+			// Also fetch EN full card for Pocket to get variant flags.
+			enCard, ferr := client.GetCard(ctx, "en", ref.ID)
+			if ferr != nil {
+				log.Warn().Err(ferr).Str("card", ref.ID).Msg("en card fetch failed")
+			} else {
+				fullCard = enCard
+			}
 		}
-
-		// Fetch full card to get Variants flags (holo/normal/reverse/firstEdition).
-		fullCard, ferr := client.GetCard(ctx, "en", ref.ID)
-		if ferr != nil {
-			log.Warn().Err(ferr).Str("card", ref.ID).Msg("full card fetch failed — using default variant")
-		}
+		// For main TCG sets we skip per-card API calls entirely (saves ~20k requests).
+		// Variants default to Normal+ReverseHolo — the standard finish for most TCG cards.
+		// Run `import-catalog --set <code>` later to enrich a specific set's variants.
 
 		dbCard := card.Card{
 			SetID:           dbSet.ID,
