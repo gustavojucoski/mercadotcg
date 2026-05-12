@@ -140,7 +140,7 @@ func (c *Client) getOptional(ctx context.Context, url string, dst any) (bool, er
 	return false, fmt.Errorf("all %d attempts failed: %w", maxAttempts, lastErr)
 }
 
-// backoff sleeps for 2^attempt seconds (1s, 2s, 4s) or until context is cancelled.
+// backoff sleeps for 2^attempt seconds (2s, 4s, 8s) or until context is cancelled.
 func (c *Client) backoff(ctx context.Context, attempt int) {
 	delay := time.Duration(1<<attempt) * time.Second
 	select {

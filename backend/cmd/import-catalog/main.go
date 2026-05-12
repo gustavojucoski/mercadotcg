@@ -122,7 +122,8 @@ func main() {
 	// Background worker pool for card image downloads.
 	// Buffered channel allows the main import loop to proceed without blocking.
 	jobs := make(chan imgJob, 500)
-	workerCtx, workerCancel := context.WithCancel(context.Background())
+	// Derive from the main ctx so workers respect the 120-minute overall deadline.
+	workerCtx, workerCancel := context.WithCancel(ctx)
 
 	var wg sync.WaitGroup
 	if *downloadImages {
@@ -271,7 +272,7 @@ func importCards(
 			}
 		}
 		// For main TCG sets we skip per-card API calls entirely (saves ~20k requests).
-		// Variants default to Normal+ReverseHolo — the standard finish for most TCG cards.
+		// Variants default to Normal+ReverseHolo (the standard pair for most sets).
 		// Run `import-catalog --set <code>` later to enrich a specific set's variants.
 
 		dbCard := card.Card{
@@ -333,8 +334,9 @@ func upsertCardWithVariants(
 	if fullCard != nil {
 		variants = fullCard.Variants
 	} else {
-		// Fallback: assume normal when we couldn't fetch the full card.
-		variants = tcgdex.Variants{Normal: true}
+		// Fallback: assume Normal + ReverseHolo — the standard finish pair for
+		// most main-set Pokémon TCG cards when we skip per-card API calls.
+		variants = tcgdex.Variants{Normal: true, Reverse: true}
 	}
 
 	finishes := variantsToFinishes(variants)
@@ -356,12 +358,13 @@ func upsertCardWithVariants(
 
 // variantsToFinishes converts TCGDex variant flags to variant_finish ENUM values.
 // Always returns at least [FinishNormal] when no flags are set.
+// WPromo has no dedicated ENUM value and maps to FinishNormal.
 func variantsToFinishes(v tcgdex.Variants) []card.Finish {
-	if !v.Normal && !v.Holo && !v.Reverse && !v.FirstEdition {
+	if !v.Normal && !v.Holo && !v.Reverse && !v.FirstEdition && !v.WPromo {
 		return []card.Finish{card.FinishNormal}
 	}
 	var finishes []card.Finish
-	if v.Normal {
+	if v.Normal || v.WPromo {
 		finishes = append(finishes, card.FinishNormal)
 	}
 	if v.Holo {
