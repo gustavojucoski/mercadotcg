@@ -279,15 +279,16 @@ func upsertSet(ctx context.Context, repo *postgres.CardRepo, s pokemontcgio.SetI
 
 	releaseDate := parseAPIDate(s.ReleaseDate)
 	dbSet := card.Set{
-		Code:        s.ID,
-		Name:        s.Name,
-		Series:      s.Series,
-		SeriesID:    seriesID,
-		TCG:         "pokemon",
-		Language:    card.LanguageEnglish,
-		ReleaseDate: releaseDate,
-		TotalCards:  s.Total,
-		ImageURL:    s.LogoURL,
+		Code:         s.ID,
+		Name:         s.Name,
+		Series:       s.Series,
+		SeriesID:     seriesID,
+		TCG:          "pokemon",
+		Language:     card.LanguageEnglish,
+		ReleaseDate:  releaseDate,
+		TotalCards:   s.Total,
+		PrintedTotal: s.PrintedTotal,
+		ImageURL:     s.LogoURL,
 	}
 	if err := repo.CreateSet(ctx, &dbSet); err != nil {
 		// Race condition: outro processo inseriu o set entre o GetSetByCode e o CreateSet.

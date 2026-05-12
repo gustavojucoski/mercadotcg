@@ -57,8 +57,8 @@ func NewCardRepo(pool *pgxpool.Pool) *CardRepo {
 // ----------------------------------------------------------------------------
 
 const insertSetSQL = `
-INSERT INTO card_sets (code, name, series, series_id, tcg, language, release_date, total_cards, image_url)
-VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, NULLIF($8, 0), NULLIF($9, ''))
+INSERT INTO card_sets (code, name, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url)
+VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, NULLIF($8, 0), NULLIF($9, 0), NULLIF($10, ''))
 RETURNING id, created_at, updated_at`
 
 // CreateSet insere um novo set e devolve o ID gerado.
@@ -72,7 +72,7 @@ func (r *CardRepo) CreateSet(ctx context.Context, s *card.Set) error {
 
 	err := r.pool.QueryRow(ctx, insertSetSQL,
 		s.Code, s.Name, s.Series, s.SeriesID, tcg, string(s.Language),
-		s.ReleaseDate, s.TotalCards, s.ImageURL,
+		s.ReleaseDate, s.TotalCards, s.PrintedTotal, s.ImageURL,
 	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
 
 	if err != nil {
@@ -91,7 +91,7 @@ SELECT
     COALESCE(cr.name, cs.series, ''), COALESCE(cr.name_pt, ''),
     cs.series_id,
     COALESCE(cs.tcg, 'pokemon'), cs.language, cs.release_date,
-    COALESCE(cs.total_cards, 0), COALESCE(cs.image_url, ''),
+    COALESCE(cs.total_cards, 0), COALESCE(cs.printed_total, 0), COALESCE(cs.image_url, ''),
     cs.created_at, cs.updated_at
 FROM card_sets cs
 LEFT JOIN card_series cr ON cr.id = cs.series_id
@@ -106,7 +106,7 @@ func (r *CardRepo) GetSetByCode(ctx context.Context, code string) (card.Set, err
 		&s.ID, &s.Code, &s.Name, &s.NamePT,
 		&s.Series, &s.SeriesPT, &s.SeriesID,
 		&s.TCG, &lang, &s.ReleaseDate,
-		&s.TotalCards, &s.ImageURL, &s.CreatedAt, &s.UpdatedAt,
+		&s.TotalCards, &s.PrintedTotal, &s.ImageURL, &s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return card.Set{}, ErrNotFound
@@ -291,7 +291,7 @@ SELECT
     s.series_id,
     COALESCE(s.tcg, 'pokemon'),
     s.language, s.release_date,
-    COALESCE(s.total_cards, 0), COALESCE(s.image_url, ''), s.created_at, s.updated_at
+    COALESCE(s.total_cards, 0), COALESCE(s.printed_total, 0), COALESCE(s.image_url, ''), s.created_at, s.updated_at
 FROM cards c
 JOIN card_sets s ON s.id = c.set_id
 LEFT JOIN card_series cr ON cr.id = s.series_id
@@ -336,7 +336,7 @@ func (r *CardRepo) LookupCards(
 			&cw.Set.Series, &cw.Set.SeriesPT, &cw.Set.SeriesID,
 			&cw.Set.TCG,
 			&lang, &cw.Set.ReleaseDate,
-			&cw.Set.TotalCards, &cw.Set.ImageURL,
+			&cw.Set.TotalCards, &cw.Set.PrintedTotal, &cw.Set.ImageURL,
 			&cw.Set.CreatedAt, &cw.Set.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan card+set: %w", err)
@@ -551,7 +551,7 @@ SELECT cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''),
        COALESCE(cr.name, cs.series, '') AS series_name,
        COALESCE(cr.name_pt, '') AS series_name_pt,
        COALESCE(cs.tcg, 'pokemon') AS tcg,
-       cs.language, cs.release_date, COALESCE(cs.total_cards, 0),
+       cs.language, cs.release_date, COALESCE(cs.total_cards, 0), COALESCE(cs.printed_total, 0),
        COALESCE(cs.image_url, '') AS image_url,
        cs.created_at, cs.updated_at,
        COUNT(*) OVER() AS total
@@ -589,7 +589,7 @@ func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid
 			&s.SeriesID,
 			&s.SeriesName, &s.SeriesNamePT,
 			&s.TCG,
-			&lang, &s.ReleaseDate, &s.TotalCards,
+			&lang, &s.ReleaseDate, &s.TotalCards, &s.PrintedTotal,
 			&s.ImageURL, &s.CreatedAt, &s.UpdatedAt,
 			&total,
 		); err != nil {
@@ -708,7 +708,7 @@ SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text,
        COALESCE(cr.name_pt, '') AS series_name_pt,
        s.series_id,
        COALESCE(s.tcg, 'pokemon'), s.language, s.release_date,
-       COALESCE(s.total_cards, 0), COALESCE(s.image_url, ''),
+       COALESCE(s.total_cards, 0), COALESCE(s.printed_total, 0), COALESCE(s.image_url, ''),
        s.created_at, s.updated_at
 FROM cards c
 JOIN card_sets s ON s.id = c.set_id
@@ -738,7 +738,7 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 		&s.ID, &s.Code, &s.Name, &s.NamePT,
 		&s.Series, &s.SeriesPT, &s.SeriesID,
 		&s.TCG, &lang, &s.ReleaseDate,
-		&s.TotalCards, &s.ImageURL,
+		&s.TotalCards, &s.PrintedTotal, &s.ImageURL,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -767,7 +767,7 @@ FROM (
       JOIN card_sets s ON s.id = c.set_id
       WHERE (c.name ILIKE $1 || '%' OR c.name_pt ILIKE $1 || '%'
              OR (c.collector_number ILIKE SPLIT_PART($1, '/', 1) || '%'
-                 AND (SPLIT_PART($1, '/', 2) = '' OR s.total_cards::text LIKE SPLIT_PART($1, '/', 2) || '%')))
+                 AND (SPLIT_PART($1, '/', 2) = '' OR COALESCE(s.printed_total, s.total_cards)::text LIKE SPLIT_PART($1, '/', 2) || '%')))
         AND ($3 = '' OR s.tcg = $3)
       LIMIT $2
     )
@@ -784,7 +784,7 @@ FROM (
           JOIN card_sets s2 ON s2.id = c2.set_id
           WHERE (c2.name ILIKE $1 || '%' OR c2.name_pt ILIKE $1 || '%'
                  OR (c2.collector_number ILIKE SPLIT_PART($1, '/', 1) || '%'
-                     AND (SPLIT_PART($1, '/', 2) = '' OR s2.total_cards::text LIKE SPLIT_PART($1, '/', 2) || '%')))
+                     AND (SPLIT_PART($1, '/', 2) = '' OR COALESCE(s2.printed_total, s2.total_cards)::text LIKE SPLIT_PART($1, '/', 2) || '%')))
             AND ($3 = '' OR s2.tcg = $3)
           -- sem LIMIT aqui: excluir TODOS os matches de prefixo para evitar duplicatas
       )
