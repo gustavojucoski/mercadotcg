@@ -31,8 +31,9 @@ type Set struct {
 	TCG         string     `json:"tcg"`
 	Language    Language   `json:"language"`
 	ReleaseDate *time.Time `json:"release_date,omitempty"`
-	TotalCards  int        `json:"total_cards,omitempty"`
-	ImageURL    string     `json:"image_url,omitempty"`
+	TotalCards   int        `json:"total_cards,omitempty"`
+	PrintedTotal int        `json:"printed_total,omitempty"`
+	ImageURL     string     `json:"image_url,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 }

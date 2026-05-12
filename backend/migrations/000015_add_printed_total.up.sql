@@ -1,0 +1,1 @@
+ALTER TABLE card_sets ADD COLUMN IF NOT EXISTS printed_total INTEGER;
