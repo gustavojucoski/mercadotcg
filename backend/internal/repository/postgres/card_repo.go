@@ -765,7 +765,7 @@ FROM (
              1 AS priority
       FROM cards c
       JOIN card_sets s ON s.id = c.set_id
-      WHERE (c.name ILIKE $1 || '%' OR c.name_pt ILIKE $1 || '%')
+      WHERE (c.name ILIKE $1 || '%' OR c.name_pt ILIKE $1 || '%' OR c.collector_number ILIKE $1 || '%')
         AND ($3 = '' OR s.tcg = $3)
       LIMIT $2
     )
@@ -780,7 +780,7 @@ FROM (
       WHERE c.id NOT IN (
           SELECT c2.id FROM cards c2
           JOIN card_sets s2 ON s2.id = c2.set_id
-          WHERE (c2.name ILIKE $1 || '%' OR c2.name_pt ILIKE $1 || '%')
+          WHERE (c2.name ILIKE $1 || '%' OR c2.name_pt ILIKE $1 || '%' OR c2.collector_number ILIKE $1 || '%')
             AND ($3 = '' OR s2.tcg = $3)
           -- sem LIMIT aqui: excluir TODOS os matches de prefixo para evitar duplicatas
       )
