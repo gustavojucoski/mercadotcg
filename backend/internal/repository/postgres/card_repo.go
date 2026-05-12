@@ -784,7 +784,7 @@ FROM (
             AND ($3 = '' OR s2.tcg = $3)
           -- sem LIMIT aqui: excluir TODOS os matches de prefixo para evitar duplicatas
       )
-      AND (c.name % $1 OR c.name_pt % $1)
+      AND (c.name::text % $1 OR c.name_pt % $1)
       AND ($3 = '' OR s.tcg = $3)
       ORDER BY GREATEST(similarity(c.name::text, $1), similarity(COALESCE(c.name_pt, ''), $1)) DESC
       LIMIT $2
