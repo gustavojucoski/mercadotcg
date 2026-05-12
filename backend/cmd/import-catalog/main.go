@@ -304,17 +304,11 @@ func upsertSet(ctx context.Context, repo *postgres.CardRepo, s pokemontcgio.SetI
 	return dbSet, nil
 }
 
-// buildCollectorNumber formata o número de colecionador como "number/printedTotal".
-// Se printedTotal <= 0 ou number não for inteiro puro (ex.: "SWSH001", "TG01"),
-// devolve number sem alteração.
-func buildCollectorNumber(number string, printedTotal int) string {
-	if printedTotal <= 0 {
-		return number
-	}
-	if _, err := strconv.Atoi(number); err != nil {
-		return number // alfanumérico: "SWSH001", "TG01", etc.
-	}
-	return fmt.Sprintf("%s/%d", number, printedTotal)
+// buildCollectorNumber devolve o número de colecionador sem o total do set.
+// O display "274/217" é construído no frontend combinando collector_number + "/" + set.total_cards;
+// armazenar o total aqui geraria slugs com "/" que quebram URLs.
+func buildCollectorNumber(number string, _ int) string {
+	return number
 }
 
 // upsertCard cria uma carta e suas variantes de acordo com as regras.
