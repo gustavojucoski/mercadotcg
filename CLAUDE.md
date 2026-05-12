@@ -465,6 +465,7 @@ GET  /api/v1/variants/{id}/signal
 - **Go**: pacotes em `lowercase`, exportados em `CamelCase`. Sem stutter (`card.Card`). Erros sempre embrulhados com `fmt.Errorf("...: %w", err)`. Sentinelas exportados (`ErrNotFound`, `ErrAlreadyExists`, `ErrInsufficientStock`).
 - **SQL**: snake_case. ENUMs no plural natural. Toda alteração de ENUM = nova migration. Nunca editar migration já aplicada.
 - **pgx/v5 + ENUMs customizados**: sempre usar cast explícito no SQL (`$n::nome_do_enum`). pgx não faz auto-cast de `string` para ENUM Postgres.
+- **CITEXT + pg_trgm**: o operador `%` e a função `similarity()` do `pg_trgm` são registrados apenas para `text`. Colunas `CITEXT` (ex: `cards.name`) precisam de cast explícito `::text` antes de usar esses operadores — sem o cast a query falha silenciosamente e retorna vazio.
 - **Frontend**: App Router. Server component por padrão; `"use client"` só quando há estado/eventos/hooks. Auth guard centralizado em `app/admin/layout.tsx` — páginas filhas não duplicam o guard. `NEXT_PUBLIC_API_URL` via `.env.local`.
 - **Docker**: `cmd/migrate`, `cmd/seed` e `cmd/import-catalog` leem `DATABASE_URL` diretamente — **não usam `config.Load()`** (que exigiria JWT_SECRET e outras vars de auth desnecessárias nesses binários).
 - **Multi-TCG**: o sistema deve suportar qualquer TCG (não só Pokémon). Ao implementar qualquer feature de catálogo de cartas ou estoque de singles, modelar de forma agnóstica ao TCG (campo `tcg` ou similar). Não assumir Pokémon como padrão hard-coded.
