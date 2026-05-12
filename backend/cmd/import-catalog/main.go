@@ -481,14 +481,9 @@ func downloadAndStore(
 // ----------------------------------------------------------------------------
 
 // detectTCG returns the platform TCG identifier for a given TCGDex serie.id.
-// TCG Pocket series use uppercase letter prefixes (A, B, C...).
-// All other series are main Pokémon TCG ("pokemon").
+// TCG Pocket sets use serie.id = "tcgp" in the TCGDex API.
 func detectTCG(serieID string) string {
-	if serieID == "" {
-		return "pokemon"
-	}
-	first := rune(serieID[0])
-	if first >= 'A' && first <= 'Z' {
+	if serieID == "tcgp" {
 		return "pocket"
 	}
 	return "pokemon"
