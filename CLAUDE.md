@@ -472,6 +472,7 @@ GET  /api/v1/variants/{id}/signal
 - **Slugs de carta**: formato `{setCode}-{collectorNumber}`. Set codes nunca devem conter hífen. Handler faz split no **primeiro** hífen; query SQL usa normalização numérica `~ '^\d+$'` para `"001"` == `"1"`.
 - **Upload**: usar sempre `upload.Provider` interface. `NewFromEnv()` seleciona local vs S3. Não instanciar `LocalProvider` ou `S3Provider` diretamente fora de `NewFromEnv`.
 - **Catálogo público**: endpoints `/series`, `/sets/*`, `/cards/*` são públicos (sem auth). `Cache-Control: public` nos responses. No frontend, `fetchAllSetCards` carrega tudo em paralelo — não usar paginação SSR em página de set.
+- **Autocomplete (`/cards/autocomplete`)**: busca por prefixo em `name`, `name_pt` e `collector_number`. Para `collector_number`, usa `SPLIT_PART($1, '/', 1)` para tolerar o formato legado `"276/217"` — extrai apenas o número antes da barra antes do ILIKE.
 - **next.config.ts remotePatterns**: ao adicionar nova fonte de imagens externas, adicionar o domínio em `next.config.ts`. Imagens internas usam `<img>` com `eslint-disable` enquanto URLs externas não forem migradas para next/image.
 
 ## 8. O que NÃO está pronto
