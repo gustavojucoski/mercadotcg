@@ -83,7 +83,7 @@ MercadoTCG/
 │   │   ├── api/            # servidor HTTP principal
 │   │   ├── migrate/        # CLI: up | down [N] | version | force <v>  — lê DATABASE_URL direto
 │   │   ├── seed/           # popula demo data — lê DATABASE_URL direto (sem config.Load)
-│   │   └── import-catalog/ # importa catálogo da pokemontcg.io API; lê DATABASE_URL direto (sem config.Load); variant_rules.json define finishes por era/rarity; flag --download-images; faz upsert de card_series antes de cada set; popula collector_number via buildCollectorNumber
+│   │   └── import-catalog/ # importa catálogo via TCGDex API (api.tcgdex.net/v2); lê DATABASE_URL direto (sem config.Load); flags --set, --series, --recent, --download-images; UPSERT idempotente; detecta TCG Pocket via serie.id='tcgp'; enriquece PT-BR via EnrichSet/EnrichCard
 │   ├── internal/
 │   │   ├── domain/
 │   │   │   ├── card/       # Series, Set (name_pt, series_pt, series_id), Card (collector_number, name_pt), Variant, Finish enum
@@ -114,7 +114,7 @@ MercadoTCG/
 │   │   │   └── helpers.go    # writeJSON, writeErr, decodeJSON, parseUUID, atoiOrDefault
 │   │   ├── repository/postgres/
 │   │   │   ├── db.go               # Connect, sentinelas ErrNotFound/ErrAlreadyExists
-│   │   │   ├── card_repo.go        # + UpsertSeries, ListSeries, UpdateSeriesNamePT, UpdateSetNamePT, UpdateCardNamePT
+│   │   │   ├── card_repo.go        # + UpsertSeries, ListSeries, UpsertCard, UpsertVariant, UpdateSetImageURL, UpdateSetSymbolURL, UpdateSeriesNamePT, UpdateSetNamePT, UpdateCardNamePT
 │   │   │   ├── price_history_repo.go
 │   │   │   ├── price_daily_repo.go
 │   │   │   ├── forex_repo.go
@@ -135,7 +135,8 @@ MercadoTCG/
 │   │   │   ├── ebay/           # Scrydex scraper (graded sales)
 │   │   │   ├── tcgplayer/      # legado — não registrado no main.go
 │   │   │   └── cardmarket/     # legado (FlareSolverr) — não registrado no main.go
-│   │   ├── pokemontcgio/   # client pokemontcg.io: FindCard (preços), ListSets, ListCardsBySet, requestWithRetry (catálogo)
+│   │   ├── tcgdex/         # client TCGDex API: Client (rate limit 1 req/s, retry 429/5xx), ListSets, GetSet, GetCard, EnrichSet, EnrichCard (bilíngue EN+PT-BR), models BilingualSet/BilingualCard/Variants
+│   │   ├── pokemontcgio/   # client pokemontcg.io: FindCard (preços), ListSets, ListCardsBySet, requestWithRetry — usado apenas para busca de preços, não mais para catálogo
 │   │   ├── upload/
 │   │   │   ├── upload.go   # Provider interface (Put/PublicURL/Exists) + LocalProvider + NewFromEnv
 │   │   │   └── s3.go       # S3Provider (aws-sdk-go-v2, ACL public-read, HeadObject para Exists)
@@ -154,7 +155,7 @@ MercadoTCG/
     ├── package.json / next.config.ts / tailwind.config.ts
     ├── proxy.ts                 # Next.js middleware: pass-through, sem proteção de rota
     ├── app/
-    │   ├── layout.tsx           # AuthProvider wrapping global
+    │   ├── layout.tsx           # LocaleProvider + AuthProvider wrapping global; lang="pt-BR"
     │   ├── page.tsx             # Homepage pública — SiteHeader + hero + feature cards
     │   ├── admin/
     │   │   ├── layout.tsx       # Auth guard (redireciona não-admin) + SiteHeader
@@ -183,7 +184,10 @@ MercadoTCG/
     │           └── page.tsx   # detalhe da carta: info, variantes, preços NM, JSON-LD
     ├── components/
     │   ├── AuthProvider.tsx   # contexto {user, loading, clearAuth, refresh}; hidrata token no mount
-    │   ├── SiteHeader.tsx     # Logo + nav inline + GlobalSearch + UserMenu; "Minha Loja" condicional por getMyStores()
+    │   ├── LocaleProvider.tsx # contexto global de idioma; lê/escreve localStorage 'mtcg_lang'; default 'pt'
+    │   ├── LangToggle.tsx     # botão "PT · EN" no SiteHeader; usa useLang()
+    │   ├── LocalizedText.tsx  # helper: <LocalizedText en="..." pt="..." /> com fallback automático para EN
+    │   ├── SiteHeader.tsx     # Logo + nav inline + GlobalSearch + LangToggle + UserMenu; "Minha Loja" condicional por getMyStores()
     │   ├── UserMenu.tsx       # Dropdown: unauthenticated → Entrar▾; authenticated → nome+avatar, Minha conta, Sair
     │   ├── GlobalSearch.tsx   # autocomplete com debounce 300ms, teclado (↑↓ Enter Esc), ARIA combobox
     │   ├── Breadcrumb.tsx     # nav breadcrumb genérico
@@ -200,11 +204,12 @@ MercadoTCG/
     │   ├── SourceCard.tsx     # accordion por fonte
     │   └── ConditionBadge.tsx
     └── lib/
-        ├── types.ts           # tipos espelhando respostas do backend (catálogo + auth + pricing)
+        ├── types.ts           # tipos espelhando respostas do backend (catálogo + auth + pricing); Set agora inclui symbol_url
         ├── catalog.ts         # fetchSeries, fetchSets, fetchSet, fetchSetCards, fetchAllSetCards, fetchCard, autocompleteCards
         ├── api.ts             # authedFetch (retry 401→refresh), searchCard()
         ├── auth.ts            # login, register, logout, refreshAccessToken, fetchCurrentUser
         ├── sets.ts            # useSets() — cache em memória
+        ├── locale.ts          # useLang() hook; t(en, pt) helper; LocaleContext type
         └── stores-admin.ts    # listStores, createStore, lookupCNPJ, verifyDocument
 ```
 
@@ -299,7 +304,7 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 **Alternativas rejeitadas:** `series_pt TEXT` em `card_sets` — inconsistência garantida em preenchimento manual; FK para `card_series.name` — instável se nome EN for corrigido na fonte.
 
 ### ADR-021 — `tcg` como VARCHAR(32) com CHECK constraint em `card_sets`
-**Decisão:** A coluna `tcg` em `card_sets` é `VARCHAR(32) NOT NULL DEFAULT 'pokemon'` com CHECK constraint explícita (`'pokemon', 'magic', 'yugioh', 'onepiece', 'lorcana', 'fab'`) em vez de ENUM nativo do Postgres.
+**Decisão:** A coluna `tcg` em `card_sets` é `VARCHAR(32) NOT NULL DEFAULT 'pokemon'` com CHECK constraint explícita (`'pokemon', 'pocket', 'magic', 'yugioh', 'onepiece', 'lorcana', 'fab'`) em vez de ENUM nativo do Postgres.
 **Razão:** O roadmap multi-TCG prevê adição orgânica de novos jogos. ENUM nativo exige `ALTER TYPE` com possível lock de tabela em tabela populada; `DROP/ADD CONSTRAINT` é mais simples. pgx/v5 não exige cast explícito para VARCHAR, eliminando o gotcha de ADR-018.
 **Trade-off aceito:** Sem validação no nível de tipo Go — usar constantes exportadas no domain para evitar typos.
 **Revisão:** Se o número de TCGs ultrapassar 10 e a CHECK constraint virar ruído, remover constraint e confiar na camada de aplicação, ou migrar para tabela de lookup `tcg_games`.
@@ -307,13 +312,19 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 ### ADR-023 — upload.Provider: interface polimórfica Local + S3
 **Decisão:** `upload.Provider` define `Put(ctx, key, r, contentType)`, `PublicURL(key)` e `Exists(ctx, key)`. `LocalProvider` implementa para dev (armazena em disco, serve via `http.FileServer`). `S3Provider` implementa para prod (aws-sdk-go-v2, ACL `public-read`). `NewFromEnv()` seleciona o backend via `STORAGE_BACKEND=local|s3`.
 **Razão:** Permite que `import-catalog --download-images` e os handlers de upload de logo usem a mesma interface sem conhecer o backend de storage.
-**Chave de storage:** `{tcg}/cards/{setCode}/{collectorNumberSafe}_{size}.{ext}` para cartas; `{tcg}/sets/{setCode}.{ext}` para logos de set; `logos/{uuid}.{ext}` para logos de loja.
+**Chave de storage:** `{tcg}/cards/{setCode}/{localID}.webp` para cartas (TCGDex usa `localId` como base, extensão sempre `.webp`); `{tcg}/sets/{setID}_logo.png` e `{tcg}/sets/{setID}_symbol.png` para imagens de set; `logos/{uuid}.{ext}` para logos de loja.
 **Gotcha S3:** AWS desabilita ACLs em buckets novos por padrão (Block Public Access). Requer desabilitar `BlockPublicAcls` e `BlockPublicPolicy` no bucket antes de usar `public-read`.
 
 ### ADR-024 — Slug de carta: `{setCode}-{collectorNumber}`
 **Decisão:** A URL de detalhe de carta usa o slug `{setCode}-{collectorNumber}` (ex: `sv1-1`, `base1-274`). O handler `GET /cards/{slug}` tenta UUID primeiro; se falhar, faz split no **primeiro** hífen para extrair setCode e collectorNumber. A query SQL aceita `"1"` == `"001"` via cast numérico com guard regex `~ '^\d+$'`. `collector_number` armazena apenas o número (`"274"`) — **nunca** `"274/217"`. O display `274/217` é composto no frontend via `collector_number + "/" + set.total_cards`.
 **Razão:** URLs legíveis e indexáveis; sem `/` no collector_number não há ambiguidade de path segment.
 **Trade-off:** Set codes nunca devem conter hífen. Se TCGs futuros tiverem set codes com hífen (ex: `op-01` de One Piece), o slug precisará de um separador diferente ou encoding.
+
+### ADR-025 — TCGDex como fonte primária de catálogo + suporte bilíngue PT-BR/EN
+**Decisão:** `cmd/import-catalog` migrado de pokemontcg.io para TCGDex (`api.tcgdex.net/v2`). `internal/tcgdex/` encapsula o client com rate limit 1 req/s e retry em 429/5xx. `EnrichSet`/`EnrichCard` buscam EN (autoritativo) e tentam PT-BR em paralelo — 404 PT-BR é silenciado (esperado para sets não-Pocket). No frontend, `LocaleProvider` + `useLang()` + `LangToggle` permitem toggle PT/EN persistido em `localStorage` (`mtcg_lang`, default `pt`). SEO/metadata sempre em EN para indexação consistente; headings visuais seguem preferência do usuário via `LocalizedText`.
+**Razão:** TCGDex cobre 208 sets (vs 172 do pokemontcg.io), inclui TCG Pocket nativamente, não exige API key e provê nomes PT-BR para cartas Pocket — recurso essencial para o público BR.
+**Trade-offs aceitos:** Cobertura PT-BR limitada a cartas de TCG Pocket (~1.100+ cartas); sets do Pokémon TCG principal permanecem só em EN até tradução manual. TCGDex não possui preços — `pokemontcgio.FindCard` permanece para busca de preços via `external-search`.
+**Variantes via TCGDex:** `Variants` struct (`Normal`, `Holo`, `Reverse`, `FirstEdition`, `WPromo`) mapeia para `card.Finish`. `WPromo` → `FinishNormal`. Fallback sem flags → `[FinishNormal, FinishReverseHolo]` (par padrão para sets principais).
 
 ### ADR-019 — Navegação via hover dropdowns no SiteHeader
 **Decisão:** "Minha Loja" e "Admin" são botões com hover dropdown no `SiteHeader`. "Admin" expande para "Busca Externa" e "Lojas". "Minha Loja" expande para as abas da loja corrente (Perfil, Membros, Selados, Singles) quando o pathname está em `/lojas/{id}/*`, ou para "Ir para minha loja" caso contrário. O `UserMenu` serve apenas para ações do usuário (conta, logout).
@@ -324,9 +335,9 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 
 ## 5. Status Atual
 
-**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação de Pokémon TCG + campos PT-BR + **catálogo público navegável** (hub de TCGs, listagem de sets, grid de cartas com filtro client-side, página de detalhe com variantes e preços, autocomplete global, sitemap).
+**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação via **TCGDex** (208 sets, TCG Pocket) + suporte bilíngue PT-BR/EN + **catálogo público navegável** (hub de TCGs, listagem de sets, grid de cartas com filtro client-side, página de detalhe com variantes e preços, autocomplete bilíngue, sitemap, toggle PT/EN).
 
-### Migrations (000001–000013)
+### Migrations (000001–000016)
 
 | # | Conteúdo |
 |---|---|
@@ -344,6 +355,7 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 | 000013 | `card_series` (séries como entidade própria: `name`, `name_pt`, `tcg`; UNIQUE `name+tcg`); FK `series_id` em `card_sets` com backfill automático; `name_pt TEXT` em `card_sets`; `collector_number TEXT NOT NULL DEFAULT ''` e `name_pt TEXT` em `cards`; índices hash em `collector_number` e btree em `series_id` (ADR-022) |
 | 000014 | `cards` — `SPLIT_PART(collector_number, '/', 1)` limpa dados existentes no formato `"274/217"` → `"274"`; dados inseridos por importações futuras já chegam limpos |
 | 000015 | `card_sets` + coluna `printed_total INTEGER` — total impresso no card (ex: 217 em Ascended Heroes), distinto de `total_cards` (295) que inclui secret rares; usado no autocomplete para filtrar "110/217" ao set correto; pokemontcg.io não fornece este campo para sets japoneses antigos — atualizar manualmente via SQL quando necessário |
+| 000016 | `card_sets` + coluna `symbol_url TEXT`; `tcg='pocket'` adicionado ao CHECK constraint de `card_sets`; índices GIN em `cards.name_pt` e `card_series.name_pt` para autocomplete bilíngue (ADR-025) |
 
 ### Endpoints HTTP disponíveis
 
@@ -473,7 +485,9 @@ GET  /api/v1/variants/{id}/signal
 - **Slugs de carta**: formato `{setCode}-{collectorNumber}`. Set codes nunca devem conter hífen. Handler faz split no **primeiro** hífen; query SQL usa normalização numérica `~ '^\d+$'` para `"001"` == `"1"`.
 - **Upload**: usar sempre `upload.Provider` interface. `NewFromEnv()` seleciona local vs S3. Não instanciar `LocalProvider` ou `S3Provider` diretamente fora de `NewFromEnv`.
 - **Catálogo público**: endpoints `/series`, `/sets/*`, `/cards/*` são públicos (sem auth). `Cache-Control: public` nos responses. No frontend, `fetchAllSetCards` carrega tudo em paralelo — não usar paginação SSR em página de set.
-- **Autocomplete (`/cards/autocomplete`)**: busca por prefixo em `name`, `name_pt` e `collector_number`. Para `collector_number`, usa `SPLIT_PART($1, '/', 1)` para tolerar o formato `"110/217"` — extrai o número antes da barra para o ILIKE e, quando há denominador (ex: `/217`), filtra sets onde `COALESCE(printed_total, total_cards)::text LIKE '217%'`. Sets japoneses antigos onde pokemontcg.io não retorna `printedTotal` precisam de atualização manual de `printed_total` (`UPDATE card_sets SET printed_total = N WHERE code = 'xxx'`).
+- **Autocomplete (`/cards/autocomplete`)**: busca por prefixo em `name`, `name_pt` e `collector_number`. Para `collector_number`, usa `SPLIT_PART($1, '/', 1)` para tolerar o formato `"110/217"` — extrai o número antes da barra para o ILIKE e, quando há denominador (ex: `/217`), filtra sets onde `COALESCE(printed_total, total_cards)::text LIKE '217%'`. Sets japoneses antigos precisam de atualização manual de `printed_total` (`UPDATE card_sets SET printed_total = N WHERE code = 'xxx'`).
+- **Bilíngue (PT-BR/EN)**: usar sempre `<LocalizedText en={...} pt={...} />` ou `t(en, pt)` de `lib/locale.ts` nos componentes de catálogo. SEO (títulos de página, meta description, JSON-LD) sempre em EN. `lang="pt-BR"` no `<html>`. Preferência em `localStorage['mtcg_lang']`, default `pt`.
+- **TCGDex image URLs**: base URL sem extensão (ex: `https://assets.tcgdex.net/...`). Append `/high.webp` para imagem de carta full-size. Logos de set: `{logoURL}.png`. Symbols: `{symbolURL}.png`. Imagens baixadas localmente via `--download-images` ficam em `{tcg}/cards/{setCode}/{localID}.webp`.
 - **next.config.ts remotePatterns**: ao adicionar nova fonte de imagens externas, adicionar o domínio em `next.config.ts`. Imagens internas usam `<img>` com `eslint-disable` enquanto URLs externas não forem migradas para next/image.
 
 ## 8. O que NÃO está pronto
