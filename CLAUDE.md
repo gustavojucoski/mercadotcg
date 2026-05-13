@@ -335,9 +335,9 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 
 ## 5. Status Atual
 
-**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação via **TCGDex** (208 sets, TCG Pocket) + suporte bilíngue PT-BR/EN + **catálogo público navegável** (hub de TCGs, listagem de sets, grid de cartas com filtro client-side, página de detalhe com variantes e preços, autocomplete bilíngue, sitemap, toggle PT/EN).
+**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação via **TCGDex** (208 sets, TCG Pocket) + suporte bilíngue PT-BR/EN + **catálogo público navegável** (hub de TCGs, listagem de sets, grid de cartas com filtro client-side, página de detalhe com variantes e preços, autocomplete bilíngue, sitemap, toggle PT/EN) + **imagens em S3 próprio** (208 sets, 23.160 cartas EN + PT-BR para sets Pocket).
 
-### Migrations (000001–000016)
+### Migrations (000001–000017)
 
 | # | Conteúdo |
 |---|---|
@@ -356,6 +356,7 @@ Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é re
 | 000014 | `cards` — `SPLIT_PART(collector_number, '/', 1)` limpa dados existentes no formato `"274/217"` → `"274"`; dados inseridos por importações futuras já chegam limpos |
 | 000015 | `card_sets` + coluna `printed_total INTEGER` — total impresso no card (ex: 217 em Ascended Heroes), distinto de `total_cards` (295) que inclui secret rares; usado no autocomplete para filtrar "110/217" ao set correto; pokemontcg.io não fornece este campo para sets japoneses antigos — atualizar manualmente via SQL quando necessário |
 | 000016 | `card_sets` + coluna `symbol_url TEXT`; `tcg='pocket'` adicionado ao CHECK constraint de `card_sets`; índices GIN em `cards.name_pt` e `card_series.name_pt` para autocomplete bilíngue (ADR-025) |
+| 000017 | `cards` + coluna `image_url_pt TEXT` — URL da imagem PT-BR da carta (quando disponível via TCGDex); populada pelo `import-catalog --download-images` para sets TCG Pocket; chave S3: `{tcg}/cards/{setCode}/{localID}_pt.webp` |
 
 ### Endpoints HTTP disponíveis
 
@@ -463,7 +464,7 @@ GET  /api/v1/variants/{id}/signal
 
 ## 6. Próximos Passos (priorizados)
 
-1. **Configurar S3 e rodar import com --download-images** — storage backend S3 configurado com bucket público + rodar `import-catalog --download-images` para migrar todas as imagens de sets e cartas do CDN TCGDex para storage próprio. Ver ADR-023 para configuração.
+1. **Remover remotePatterns de transição** — `assets.tcgdex.net` e `images.pokemontcg.io` em `frontend/next.config.ts` foram adicionados como transição. Remover após confirmar que todas as imagens servidas pelo frontend apontam para o S3 próprio (`*.s3.sa-east-1.amazonaws.com`).
 2. **Preencher traduções PT-BR de sets** — séries já têm name_pt via `seriesPTFallback` no import. Sets individuais ainda sem PT (exceto Pocket). Usar `PATCH /api/v1/admin/sets/{id}/name-pt` para os sets mais acessados.
 2. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso as páginas de detalhe de carta mostram "Sem preço" para todas as variantes.
 3. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`.
@@ -488,7 +489,8 @@ GET  /api/v1/variants/{id}/signal
 - **Catálogo público**: endpoints `/series`, `/sets/*`, `/cards/*` são públicos (sem auth). `Cache-Control: public` nos responses. No frontend, `fetchAllSetCards` carrega tudo em paralelo — não usar paginação SSR em página de set.
 - **Autocomplete (`/cards/autocomplete`)**: busca por prefixo em `name`, `name_pt` e `collector_number`. Para `collector_number`, usa `SPLIT_PART($1, '/', 1)` para tolerar o formato `"110/217"` — extrai o número antes da barra para o ILIKE e, quando há denominador (ex: `/217`), filtra sets onde `COALESCE(printed_total, total_cards)::text LIKE '217%'`. Sets japoneses antigos precisam de atualização manual de `printed_total` (`UPDATE card_sets SET printed_total = N WHERE code = 'xxx'`).
 - **Bilíngue (PT-BR/EN)**: usar sempre `<LocalizedText en={...} pt={...} />` ou `t(en, pt)` de `lib/locale.ts` nos componentes de catálogo. SEO (títulos de página, meta description, JSON-LD) sempre em EN. `lang="pt-BR"` no `<html>`. Preferência em `localStorage['mtcg_lang']`, default `pt`.
-- **TCGDex image URLs**: base URL sem extensão (ex: `https://assets.tcgdex.net/...`). Append `/high.webp` para imagem de carta full-size. Logos de set: `{logoURL}.png`. Symbols: `{symbolURL}.png`. Imagens baixadas localmente via `--download-images` ficam em `{tcg}/cards/{setCode}/{localID}.webp`.
+- **TCGDex image URLs**: base URL sem extensão (ex: `https://assets.tcgdex.net/...`). Append `/high.webp` para imagem de carta full-size. Logos de set: `{logoURL}.png`. Symbols: `{symbolURL}.png`. Imagens baixadas via `--download-images` ficam em `{tcg}/cards/{setCode}/{localID}.webp` (EN) e `{tcg}/cards/{setCode}/{localID}_pt.webp` (PT-BR, somente sets Pocket).
+- **S3 bucket**: `mercadotcg-images-549803608550-sa-east-1-an`, região `sa-east-1`. Bucket policy com `s3:GetObject` para `Principal: "*"`. IAM user `MercadoTCG` com `s3:PutObject`, `s3:GetObject`, `s3:HeadObject`, `s3:DeleteObject` no resource `arn:aws:s3:::mercadotcg-images-549803608550-sa-east-1-an/*`. S3Provider NÃO usa ACL por objeto (bucket novo tem ACLs desabilitadas — usar bucket policy). `S3Provider.Put` bufferiza o body via `io.ReadAll` para fornecer `Content-Length` obrigatório.
 - **next.config.ts remotePatterns**: ao adicionar nova fonte de imagens externas, adicionar o domínio em `next.config.ts`. Imagens internas usam `<img>` com `eslint-disable` enquanto URLs externas não forem migradas para next/image.
 
 ## 8. O que NÃO está pronto
