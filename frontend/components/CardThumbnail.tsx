@@ -24,18 +24,25 @@ function rarityClass(rarity: string): string {
   return RARITY_COLOR[rarity] ?? 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
 }
 
-// pocketPtUrl switches a TCGDex Pocket EN image URL to the PT-BR version.
-// Only Pocket cards have language-specific artwork; non-Pocket images are EN-only.
-function localizedImgUrl(url: string | undefined, lang: string): string | undefined {
-  if (!url || lang !== 'pt') return url
-  return url.replace('/en/tcgp/', '/pt-br/tcgp/')
+// localizedImgUrl resolves the best image URL for the current language.
+// Priority when lang==='pt': explicit image_url_pt field > TCGDex path rewrite > EN fallback.
+function localizedImgUrl(
+  url: string | undefined,
+  lang: string,
+  urlPt?: string,
+): string | undefined {
+  if (lang === 'pt') {
+    if (urlPt && urlPt.length > 0) return urlPt
+    if (url) return url.replace('/en/tcgp/', '/pt-br/tcgp/')
+  }
+  return url
 }
 
 export function CardThumbnail({ card, setCode }: CardThumbnailProps) {
   const { t, lang } = useLang()
   const slug = `${setCode}-${card.collector_number}`
   const displayName = t(card.name, card.name_pt)
-  const imgSrc = localizedImgUrl(card.image_small_url, lang)
+  const imgSrc = localizedImgUrl(card.image_small_url, lang, card.image_url_pt)
 
   return (
     <Link

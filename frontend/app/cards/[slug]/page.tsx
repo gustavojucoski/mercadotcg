@@ -122,6 +122,7 @@ export default async function CardDetailPage({ params }: Props) {
             <VariantTabs
               variants={variants}
               imageSrc={card.image_large_url || card.image_small_url}
+              imageSrcPt={card.image_url_pt}
               imageAlt={breadcrumbCardLabel}
             />
           </div>

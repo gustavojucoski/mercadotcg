@@ -75,11 +75,12 @@ var seriesPTFallback = map[string]string{
 
 // imgJob describes a card image to download in the background worker pool.
 type imgJob struct {
-	cardID   uuid.UUID
-	setCode  string
-	localID  string // TCGDex localId, used as the filename base
-	imageURL string // base URL (no extension); append "/high.webp" for the image
-	tcg      string
+	cardID     uuid.UUID
+	setCode    string
+	localID    string // TCGDex localId, used as the filename base
+	imageURL   string // base URL (no extension); append "/high.webp" for the image
+	imageURLPT string // PT-BR image base URL; empty when unavailable
+	tcg        string
 }
 
 func main() {
@@ -173,6 +174,19 @@ func main() {
 						// TCGDex provides a single image per card; use it for both small and large.
 						if err := repo.UpdateCardImages(workerCtx, job.cardID, newURL, newURL); err != nil {
 							log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("UpdateCardImages failed")
+						}
+					}
+
+					// Download PT-BR image when available (TCG Pocket cards only).
+					// Uses localID+"_pt" as the filename to avoid colliding with the EN image.
+					if job.imageURLPT != "" {
+						newURLPT, err := downloadCardImage(workerCtx, imgHTTP, uploadProvider, job.tcg, job.setCode, job.localID+"_pt", job.imageURLPT)
+						if err != nil {
+							log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("download PT image failed")
+						} else if newURLPT != "" {
+							if err := repo.UpdateCardImagePT(workerCtx, job.cardID, newURLPT); err != nil {
+								log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("UpdateCardImagePT failed")
+							}
 						}
 					}
 				}
@@ -316,6 +330,7 @@ func importCards(
 
 	for _, ref := range cardRefs {
 		var namePT string
+		var ptImageURL string
 		var fullCard *tcgdex.Card
 
 		if fetchPTBR {
@@ -325,6 +340,7 @@ func importCards(
 				log.Warn().Err(ferr).Str("card", ref.ID).Msg("pt-br card fetch failed")
 			} else if ptCard != nil {
 				namePT = ptCard.Name
+				ptImageURL = ptCard.Image // may differ from EN image for Pocket cards
 			}
 			// Also fetch EN full card for Pocket to get variant flags.
 			enCard, ferr := client.GetCard(ctx, "en", ref.ID)
@@ -364,11 +380,12 @@ func importCards(
 
 		if downloadImages && ref.Image != "" {
 			imgJobs <- imgJob{
-				cardID:   dbCard.ID, // populated by UpsertCard RETURNING id inside upsertCardWithVariants
-				setCode:  dbSet.Code,
-				localID:  ref.LocalID,
-				imageURL: ref.Image,
-				tcg:      tcgName,
+				cardID:     dbCard.ID, // populated by UpsertCard RETURNING id inside upsertCardWithVariants
+				setCode:    dbSet.Code,
+				localID:    ref.LocalID,
+				imageURL:   ref.Image,
+				imageURLPT: ptImageURL, // empty for non-Pocket sets
+				tcg:        tcgName,
 			}
 		}
 	}
