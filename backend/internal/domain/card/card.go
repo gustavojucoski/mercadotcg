@@ -34,6 +34,7 @@ type Set struct {
 	TotalCards   int        `json:"total_cards,omitempty"`
 	PrintedTotal int        `json:"printed_total,omitempty"`
 	ImageURL     string     `json:"image_url,omitempty"`
+	SymbolURL    string     `json:"symbol_url,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 }

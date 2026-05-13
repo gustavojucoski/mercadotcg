@@ -57,8 +57,8 @@ func NewCardRepo(pool *pgxpool.Pool) *CardRepo {
 // ----------------------------------------------------------------------------
 
 const insertSetSQL = `
-INSERT INTO card_sets (code, name, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url)
-VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, NULLIF($8, 0), NULLIF($9, 0), NULLIF($10, ''))
+INSERT INTO card_sets (code, name, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url, symbol_url)
+VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, NULLIF($8, 0), NULLIF($9, 0), NULLIF($10, ''), NULLIF($11, ''))
 RETURNING id, created_at, updated_at`
 
 // CreateSet insere um novo set e devolve o ID gerado.
@@ -72,7 +72,7 @@ func (r *CardRepo) CreateSet(ctx context.Context, s *card.Set) error {
 
 	err := r.pool.QueryRow(ctx, insertSetSQL,
 		s.Code, s.Name, s.Series, s.SeriesID, tcg, string(s.Language),
-		s.ReleaseDate, s.TotalCards, s.PrintedTotal, s.ImageURL,
+		s.ReleaseDate, s.TotalCards, s.PrintedTotal, s.ImageURL, s.SymbolURL,
 	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
 
 	if err != nil {
@@ -85,13 +85,50 @@ func (r *CardRepo) CreateSet(ctx context.Context, s *card.Set) error {
 	return nil
 }
 
+const upsertSetSQL = `
+INSERT INTO card_sets (code, name, name_pt, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url, symbol_url)
+VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, NULLIF($9, 0), NULLIF($10, 0), NULLIF($11, ''), NULLIF($12, ''))
+ON CONFLICT (code) DO UPDATE SET
+    name         = EXCLUDED.name,
+    name_pt      = COALESCE(EXCLUDED.name_pt, card_sets.name_pt),
+    series       = COALESCE(EXCLUDED.series, card_sets.series),
+    series_id    = COALESCE(EXCLUDED.series_id, card_sets.series_id),
+    tcg          = EXCLUDED.tcg,
+    release_date = COALESCE(EXCLUDED.release_date, card_sets.release_date),
+    language     = EXCLUDED.language,
+    total_cards  = COALESCE(EXCLUDED.total_cards, card_sets.total_cards),
+    printed_total= COALESCE(EXCLUDED.printed_total, card_sets.printed_total),
+    image_url    = COALESCE(EXCLUDED.image_url, card_sets.image_url),
+    symbol_url   = COALESCE(EXCLUDED.symbol_url, card_sets.symbol_url),
+    updated_at   = now()
+RETURNING id, created_at, updated_at`
+
+// UpsertSet inserts or updates a set by code. Returns the set with ID populated.
+// Unlike CreateSet, this is idempotent and safe for repeated import runs.
+func (r *CardRepo) UpsertSet(ctx context.Context, s *card.Set) error {
+	tcg := s.TCG
+	if tcg == "" {
+		tcg = "pokemon"
+	}
+
+	err := r.pool.QueryRow(ctx, upsertSetSQL,
+		s.Code, s.Name, s.NamePT, s.Series, s.SeriesID, tcg, string(s.Language),
+		s.ReleaseDate, s.TotalCards, s.PrintedTotal, s.ImageURL, s.SymbolURL,
+	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert card_set: %w", err)
+	}
+	return nil
+}
+
 const selectSetByCodeSQL = `
 SELECT
     cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''),
     COALESCE(cr.name, cs.series, ''), COALESCE(cr.name_pt, ''),
     cs.series_id,
     COALESCE(cs.tcg, 'pokemon'), cs.language, cs.release_date,
-    COALESCE(cs.total_cards, 0), COALESCE(cs.printed_total, 0), COALESCE(cs.image_url, ''),
+    COALESCE(cs.total_cards, 0), COALESCE(cs.printed_total, 0),
+    COALESCE(cs.image_url, ''), COALESCE(cs.symbol_url, ''),
     cs.created_at, cs.updated_at
 FROM card_sets cs
 LEFT JOIN card_series cr ON cr.id = cs.series_id
@@ -106,7 +143,8 @@ func (r *CardRepo) GetSetByCode(ctx context.Context, code string) (card.Set, err
 		&s.ID, &s.Code, &s.Name, &s.NamePT,
 		&s.Series, &s.SeriesPT, &s.SeriesID,
 		&s.TCG, &lang, &s.ReleaseDate,
-		&s.TotalCards, &s.PrintedTotal, &s.ImageURL, &s.CreatedAt, &s.UpdatedAt,
+		&s.TotalCards, &s.PrintedTotal, &s.ImageURL, &s.SymbolURL,
+		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return card.Set{}, ErrNotFound
@@ -151,6 +189,26 @@ func (r *CardRepo) UpsertSeries(ctx context.Context, name, tcg string) (card.Ser
 	)
 	if err != nil {
 		return card.Series{}, fmt.Errorf("upsert series: %w", err)
+	}
+	return s, nil
+}
+
+const upsertSeriesWithPTSQL = `
+INSERT INTO card_series (name, name_pt, tcg)
+VALUES ($1, NULLIF($2, ''), $3)
+ON CONFLICT (name, tcg) DO UPDATE SET
+    name_pt = COALESCE(EXCLUDED.name_pt, card_series.name_pt)
+RETURNING id, name, COALESCE(name_pt, ''), tcg, created_at`
+
+// UpsertSeriesWithPT upserts a series and sets name_pt when provided.
+// Used by the TCGDex importer which has PT-BR series names for TCG Pocket sets.
+func (r *CardRepo) UpsertSeriesWithPT(ctx context.Context, name, namePT, tcg string) (card.Series, error) {
+	var s card.Series
+	err := r.pool.QueryRow(ctx, upsertSeriesWithPTSQL, name, namePT, tcg).Scan(
+		&s.ID, &s.Name, &s.NamePT, &s.TCG, &s.CreatedAt,
+	)
+	if err != nil {
+		return card.Series{}, fmt.Errorf("upsert series with pt: %w", err)
 	}
 	return s, nil
 }
@@ -232,6 +290,69 @@ func (r *CardRepo) CreateCard(ctx context.Context, c *card.Card) error {
 	return nil
 }
 
+// upsertCardSQL uses (set_id, number) as the natural key (matches the existing UNIQUE constraint).
+// On conflict, updates name, name_pt, collector_number, and image URL so re-runs are safe.
+const upsertCardSQL = `
+INSERT INTO cards (
+    set_id, number, collector_number, name, name_pt,
+    rarity, supertype, subtypes, types,
+    hp, illustrator, image_small_url, image_large_url, external_ids
+) VALUES (
+    $1, $2, $3, $4, NULLIF($5, ''),
+    NULLIF($6, ''), NULLIF($7, ''), $8, $9,
+    NULLIF($10, 0), NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), $14
+)
+ON CONFLICT (set_id, number) DO UPDATE SET
+    name            = EXCLUDED.name,
+    name_pt         = COALESCE(EXCLUDED.name_pt, cards.name_pt),
+    collector_number= EXCLUDED.collector_number,
+    rarity          = COALESCE(EXCLUDED.rarity, cards.rarity),
+    image_small_url = COALESCE(EXCLUDED.image_small_url, cards.image_small_url),
+    image_large_url = COALESCE(EXCLUDED.image_large_url, cards.image_large_url),
+    updated_at      = now()
+RETURNING id, created_at, updated_at`
+
+// UpsertCard inserts or updates a card. The natural key is (set_id, number).
+// Safe for repeated import runs. Populates c.ID, c.CreatedAt, c.UpdatedAt.
+func (r *CardRepo) UpsertCard(ctx context.Context, c *card.Card) error {
+	external := c.ExternalIDs
+	if external == nil {
+		external = map[string]string{}
+	}
+
+	err := r.pool.QueryRow(ctx, upsertCardSQL,
+		c.SetID, c.Number, c.CollectorNumber, c.Name, c.NamePT,
+		c.Rarity, c.Supertype, c.Subtypes, c.Types,
+		c.HP, c.Illustrator, c.ImageSmallURL, c.ImageLargeURL, external,
+	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert card: %w", err)
+	}
+	return nil
+}
+
+// upsertVariantSQL silently skips duplicates.
+// Uses ON CONFLICT DO NOTHING without a conflict target because the unique
+// index idx_card_variants_natural_key is an expression index on
+// (card_id, finish, COALESCE(label, '')), which PostgreSQL accepts for inference.
+// Omitting the target is simpler and still safe — any unique violation is silently dropped.
+const upsertVariantSQL = `
+INSERT INTO card_variants (card_id, finish, label, is_promo, notes)
+VALUES ($1, $2::variant_finish, NULLIF($3, ''), $4, NULLIF($5, ''))
+ON CONFLICT DO NOTHING`
+
+// UpsertVariant inserts a variant if it does not already exist.
+// Silently skips duplicates (ON CONFLICT DO NOTHING) — safe for re-runs.
+func (r *CardRepo) UpsertVariant(ctx context.Context, v *card.Variant) error {
+	_, err := r.pool.Exec(ctx, upsertVariantSQL,
+		v.CardID, string(v.Finish), v.Label, v.IsPromo, v.Notes,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert variant: %w", err)
+	}
+	return nil
+}
+
 const selectCardByIDSQL = `
 SELECT id, set_id, number, COALESCE(collector_number, ''), name::text, COALESCE(name_pt, ''),
        COALESCE(rarity, ''), COALESCE(supertype, ''),
@@ -291,7 +412,9 @@ SELECT
     s.series_id,
     COALESCE(s.tcg, 'pokemon'),
     s.language, s.release_date,
-    COALESCE(s.total_cards, 0), COALESCE(s.printed_total, 0), COALESCE(s.image_url, ''), s.created_at, s.updated_at
+    COALESCE(s.total_cards, 0), COALESCE(s.printed_total, 0),
+    COALESCE(s.image_url, ''), COALESCE(s.symbol_url, ''),
+    s.created_at, s.updated_at
 FROM cards c
 JOIN card_sets s ON s.id = c.set_id
 LEFT JOIN card_series cr ON cr.id = s.series_id
@@ -336,7 +459,8 @@ func (r *CardRepo) LookupCards(
 			&cw.Set.Series, &cw.Set.SeriesPT, &cw.Set.SeriesID,
 			&cw.Set.TCG,
 			&lang, &cw.Set.ReleaseDate,
-			&cw.Set.TotalCards, &cw.Set.PrintedTotal, &cw.Set.ImageURL,
+			&cw.Set.TotalCards, &cw.Set.PrintedTotal,
+			&cw.Set.ImageURL, &cw.Set.SymbolURL,
 			&cw.Set.CreatedAt, &cw.Set.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan card+set: %w", err)
@@ -402,6 +526,22 @@ func (r *CardRepo) UpdateSetImageURL(ctx context.Context, setID uuid.UUID, image
 	tag, err := r.pool.Exec(ctx, updateSetImageURLSQL, imageURL, setID)
 	if err != nil {
 		return fmt.Errorf("update set image_url: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const updateSetSymbolURLSQL = `
+UPDATE card_sets SET symbol_url = $1, updated_at = NOW() WHERE id = $2`
+
+// UpdateSetSymbolURL updates the symbol image URL of a set.
+// Used by import-catalog after downloading the symbol locally.
+func (r *CardRepo) UpdateSetSymbolURL(ctx context.Context, setID uuid.UUID, symbolURL string) error {
+	tag, err := r.pool.Exec(ctx, updateSetSymbolURLSQL, symbolURL, setID)
+	if err != nil {
+		return fmt.Errorf("update set symbol_url: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -553,6 +693,7 @@ SELECT cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''),
        COALESCE(cs.tcg, 'pokemon') AS tcg,
        cs.language, cs.release_date, COALESCE(cs.total_cards, 0), COALESCE(cs.printed_total, 0),
        COALESCE(cs.image_url, '') AS image_url,
+       COALESCE(cs.symbol_url, '') AS symbol_url,
        cs.created_at, cs.updated_at,
        COUNT(*) OVER() AS total
 FROM card_sets cs
@@ -590,7 +731,8 @@ func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid
 			&s.SeriesName, &s.SeriesNamePT,
 			&s.TCG,
 			&lang, &s.ReleaseDate, &s.TotalCards, &s.PrintedTotal,
-			&s.ImageURL, &s.CreatedAt, &s.UpdatedAt,
+			&s.ImageURL, &s.SymbolURL,
+			&s.CreatedAt, &s.UpdatedAt,
 			&total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan set with series: %w", err)
@@ -708,7 +850,8 @@ SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text,
        COALESCE(cr.name_pt, '') AS series_name_pt,
        s.series_id,
        COALESCE(s.tcg, 'pokemon'), s.language, s.release_date,
-       COALESCE(s.total_cards, 0), COALESCE(s.printed_total, 0), COALESCE(s.image_url, ''),
+       COALESCE(s.total_cards, 0), COALESCE(s.printed_total, 0),
+       COALESCE(s.image_url, ''), COALESCE(s.symbol_url, ''),
        s.created_at, s.updated_at
 FROM cards c
 JOIN card_sets s ON s.id = c.set_id
@@ -738,7 +881,8 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 		&s.ID, &s.Code, &s.Name, &s.NamePT,
 		&s.Series, &s.SeriesPT, &s.SeriesID,
 		&s.TCG, &lang, &s.ReleaseDate,
-		&s.TotalCards, &s.PrintedTotal, &s.ImageURL,
+		&s.TotalCards, &s.PrintedTotal,
+		&s.ImageURL, &s.SymbolURL,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
