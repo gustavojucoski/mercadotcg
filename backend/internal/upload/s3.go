@@ -49,13 +49,14 @@ func (p *S3Provider) Put(ctx context.Context, key string, r io.Reader, contentTy
 	if err != nil {
 		return "", fmt.Errorf("upload: ler body para %s: %w", key, err)
 	}
+	// No ACL field: bucket uses a public-read bucket policy instead of per-object ACLs.
+	// New S3 buckets disable ACLs by default (Object Ownership = bucket owner enforced).
 	_, err = p.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(p.bucket),
 		Key:           aws.String(key),
 		Body:          bytes.NewReader(body),
 		ContentLength: aws.Int64(int64(len(body))),
 		ContentType:   aws.String(contentType),
-		ACL:           types.ObjectCannedACLPublicRead,
 	})
 	if err != nil {
 		return "", fmt.Errorf("upload: s3 put %s: %w", key, err)
