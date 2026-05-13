@@ -359,6 +359,7 @@ SELECT id, set_id, number, COALESCE(collector_number, ''), name::text, COALESCE(
        COALESCE(subtypes, '{}'::text[]), COALESCE(types, '{}'::text[]),
        COALESCE(hp, 0), COALESCE(illustrator, ''),
        COALESCE(image_small_url, ''), COALESCE(image_large_url, ''),
+       COALESCE(image_url_pt, ''),
        external_ids, created_at, updated_at
 FROM cards WHERE id = $1`
 
@@ -369,6 +370,7 @@ func (r *CardRepo) GetCardByID(ctx context.Context, id uuid.UUID) (card.Card, er
 		&c.ID, &c.SetID, &c.Number, &c.CollectorNumber, &c.Name, &c.NamePT,
 		&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
 		&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
+		&c.ImageURLPT,
 		&c.ExternalIDs, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -406,6 +408,7 @@ SELECT
     COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
     COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
     COALESCE(c.image_small_url, ''), COALESCE(c.image_large_url, ''),
+    COALESCE(c.image_url_pt, ''),
     c.external_ids, c.created_at, c.updated_at,
     s.id, s.code, s.name, COALESCE(s.name_pt, ''),
     COALESCE(cr.name, s.series, ''), COALESCE(cr.name_pt, ''),
@@ -454,6 +457,7 @@ func (r *CardRepo) LookupCards(
 			&cw.Card.Name, &cw.Card.NamePT,
 			&cw.Card.Rarity, &cw.Card.Supertype, &cw.Card.Subtypes, &cw.Card.Types,
 			&cw.Card.HP, &cw.Card.Illustrator, &cw.Card.ImageSmallURL, &cw.Card.ImageLargeURL,
+			&cw.Card.ImageURLPT,
 			&cw.Card.ExternalIDs, &cw.Card.CreatedAt, &cw.Card.UpdatedAt,
 			&cw.Set.ID, &cw.Set.Code, &cw.Set.Name, &cw.Set.NamePT,
 			&cw.Set.Series, &cw.Set.SeriesPT, &cw.Set.SeriesID,
@@ -510,6 +514,23 @@ func (r *CardRepo) UpdateCardImages(ctx context.Context, cardID uuid.UUID, small
 	tag, err := r.pool.Exec(ctx, updateCardImagesSQL, cardID, smallURL, largeURL)
 	if err != nil {
 		return fmt.Errorf("update card images: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const updateCardImagePTSQL = `
+UPDATE cards SET image_url_pt = $2, updated_at = now() WHERE id = $1`
+
+// UpdateCardImagePT atualiza a URL da imagem PT-BR de uma carta.
+// Usado pelo import-catalog após baixar a imagem PT localmente.
+// Retorna ErrNotFound se o cardID não existir no banco.
+func (r *CardRepo) UpdateCardImagePT(ctx context.Context, cardID uuid.UUID, imageURL string) error {
+	tag, err := r.pool.Exec(ctx, updateCardImagePTSQL, cardID, imageURL)
+	if err != nil {
+		return fmt.Errorf("update card image_url_pt: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -752,6 +773,7 @@ SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text,
        COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
        COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
        COALESCE(c.image_small_url, ''), COALESCE(c.image_large_url, ''),
+       COALESCE(c.image_url_pt, ''),
        c.external_ids, c.created_at, c.updated_at,
        COUNT(*) OVER() AS total
 FROM cards c
@@ -792,6 +814,7 @@ func (r *CardRepo) ListCardsBySetCode(ctx context.Context, setCode string, page,
 			&cw.ID, &cw.SetID, &cw.Number, &cw.CollectorNumber, &cw.Name, &cw.NamePT,
 			&cw.Rarity, &cw.Supertype, &cw.Subtypes, &cw.Types,
 			&cw.HP, &cw.Illustrator, &cw.ImageSmallURL, &cw.ImageLargeURL,
+			&cw.ImageURLPT,
 			&cw.ExternalIDs, &cw.CreatedAt, &cw.UpdatedAt,
 			&total,
 		); err != nil {
@@ -844,6 +867,7 @@ SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text,
        COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
        COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
        COALESCE(c.image_small_url, ''), COALESCE(c.image_large_url, ''),
+       COALESCE(c.image_url_pt, ''),
        c.external_ids, c.created_at, c.updated_at,
        s.id, s.code, s.name, COALESCE(s.name_pt, ''),
        COALESCE(cr.name, s.series, '') AS series_name,
@@ -877,6 +901,7 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 		&c.ID, &c.SetID, &c.Number, &c.CollectorNumber, &c.Name, &c.NamePT,
 		&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
 		&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
+		&c.ImageURLPT,
 		&c.ExternalIDs, &c.CreatedAt, &c.UpdatedAt,
 		&s.ID, &s.Code, &s.Name, &s.NamePT,
 		&s.Series, &s.SeriesPT, &s.SeriesID,

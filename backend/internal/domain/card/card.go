@@ -65,6 +65,7 @@ type Card struct {
 	Illustrator   string            `json:"illustrator,omitempty"`
 	ImageSmallURL string            `json:"image_small_url,omitempty"`
 	ImageLargeURL string            `json:"image_large_url,omitempty"`
+	ImageURLPT    string            `json:"image_url_pt,omitempty"`
 	ExternalIDs   map[string]string `json:"external_ids,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
