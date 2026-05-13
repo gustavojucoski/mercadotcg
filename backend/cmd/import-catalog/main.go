@@ -190,8 +190,8 @@ func main() {
 			ReleaseDate:  releaseDate,
 			TotalCards:   bs.CardCount.Total,
 			PrintedTotal: bs.CardCount.Official,
-			ImageURL:     bs.Logo,
-			SymbolURL:    bs.Symbol,
+			ImageURL:     pngURL(bs.Logo),
+			SymbolURL:    pngURL(bs.Symbol),
 		}
 
 		if err := repo.UpsertSet(ctx, &dbSet); err != nil {
@@ -499,6 +499,14 @@ func imageURL(base string) string {
 		return ""
 	}
 	return base + "/high.webp"
+}
+
+// pngURL appends ".png" to a TCGDex base URL (used for set logos and symbols).
+func pngURL(base string) string {
+	if base == "" {
+		return ""
+	}
+	return base + ".png"
 }
 
 // parseISO8601 parses a date string in "2006-01-02" or "2006/01/02" format.

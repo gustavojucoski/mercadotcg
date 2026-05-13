@@ -16,11 +16,16 @@ function normalizeNum(s: string): string {
   return isNaN(n) ? s.toLowerCase() : String(n)
 }
 
+function localizedImgUrl(url: string | undefined, lang: string): string | undefined {
+  if (!url || lang !== 'pt') return url
+  return url.replace('/en/tcgp/', '/pt-br/tcgp/')
+}
+
 export function CardGridFilter({ cards, setCode }: CardGridFilterProps) {
   const [query, setQuery] = useState('')
   const [selectedRarities, setSelectedRarities] = useState<Set<string>>(new Set())
   const [view, setView] = useState<'grid' | 'list'>('grid')
-  const { t } = useLang()
+  const { t, lang } = useLang()
 
   const availableRarities = useMemo(() => {
     const seen = new Set<string>()
@@ -141,16 +146,17 @@ export function CardGridFilter({ cards, setCode }: CardGridFilterProps) {
           {filtered.map(card => {
             const slug = `${setCode}-${card.collector_number}`
             const displayName = t(card.name, card.name_pt)
+            const imgSrc = localizedImgUrl(card.image_small_url, lang)
             return (
               <Link
                 key={card.id}
                 href={`/cards/${slug}`}
                 className="flex items-center gap-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-4 py-3 hover:border-violet-300 dark:hover:border-violet-700 transition-colors group"
               >
-                {card.image_small_url ? (
+                {imgSrc ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={card.image_small_url}
+                    src={imgSrc}
                     alt={displayName}
                     width={32}
                     height={44}

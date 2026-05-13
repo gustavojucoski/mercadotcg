@@ -24,10 +24,18 @@ function rarityClass(rarity: string): string {
   return RARITY_COLOR[rarity] ?? 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
 }
 
+// pocketPtUrl switches a TCGDex Pocket EN image URL to the PT-BR version.
+// Only Pocket cards have language-specific artwork; non-Pocket images are EN-only.
+function localizedImgUrl(url: string | undefined, lang: string): string | undefined {
+  if (!url || lang !== 'pt') return url
+  return url.replace('/en/tcgp/', '/pt-br/tcgp/')
+}
+
 export function CardThumbnail({ card, setCode }: CardThumbnailProps) {
-  const { t } = useLang()
+  const { t, lang } = useLang()
   const slug = `${setCode}-${card.collector_number}`
   const displayName = t(card.name, card.name_pt)
+  const imgSrc = localizedImgUrl(card.image_small_url, lang)
 
   return (
     <Link
@@ -35,10 +43,10 @@ export function CardThumbnail({ card, setCode }: CardThumbnailProps) {
       className="group flex flex-col rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden hover:border-violet-300 dark:hover:border-violet-700 hover:shadow-md transition-all"
     >
       <div className="bg-zinc-50 dark:bg-zinc-800/50 flex items-center justify-center p-2 aspect-[2.5/3.5]">
-        {card.image_small_url ? (
+        {imgSrc ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={card.image_small_url}
+            src={imgSrc}
             alt={displayName}
             className="max-h-full max-w-full object-contain rounded group-hover:scale-105 transition-transform duration-200"
             loading="lazy"
@@ -48,6 +56,7 @@ export function CardThumbnail({ card, setCode }: CardThumbnailProps) {
             <span className="text-xs text-zinc-400">{card.collector_number}</span>
           </div>
         )}
+
       </div>
       <div className="p-2.5">
         <p className="text-xs font-medium text-zinc-900 dark:text-zinc-100 leading-snug truncate group-hover:text-violet-600 dark:group-hover:text-violet-400 transition-colors">
