@@ -92,6 +92,7 @@ export interface CardInSet {
   rarity: string
   supertype: string
   image_small_url: string
+  image_url_pt?: string
   variants: CardVariantSummary[]
 }
 
@@ -130,6 +131,7 @@ export interface CardDetail {
     types: string[]
     image_small_url: string
     image_large_url: string
+    image_url_pt?: string
   }
   set: TCGSet
   variants: CardVariantDetail[]

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import type { CardVariantDetail } from '@/lib/types'
+import { useLang } from '@/lib/locale'
 
 const FINISH_LABEL: Record<string, string> = {
   holo: 'Holo',
@@ -26,12 +27,17 @@ function formatBRL(value: string): string {
 interface VariantTabsProps {
   variants: CardVariantDetail[]
   imageSrc: string
+  imageSrcPt?: string
   imageAlt: string
 }
 
-export function VariantTabs({ variants, imageSrc, imageAlt }: VariantTabsProps) {
+export function VariantTabs({ variants, imageSrc, imageSrcPt, imageAlt }: VariantTabsProps) {
   const [activeIdx, setActiveIdx] = useState(0)
+  const { lang } = useLang()
   const active = variants[activeIdx]
+  const resolvedImageSrc = lang === 'pt' && imageSrcPt && imageSrcPt.length > 0
+    ? imageSrcPt
+    : imageSrc
 
   return (
     <div>
@@ -39,7 +45,7 @@ export function VariantTabs({ variants, imageSrc, imageAlt }: VariantTabsProps) 
         <div className="flex justify-center mb-4">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={imageSrc}
+            src={resolvedImageSrc}
             alt={imageAlt}
             className="max-h-96 w-auto rounded-xl shadow-lg object-contain"
           />
