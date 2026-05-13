@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
@@ -63,7 +65,12 @@ func (p *S3Provider) PublicURL(key string) string {
 }
 
 // Exists uses HeadObject to check whether key is present in the bucket.
-// Returns (false, nil) for a 404; (false, err) for any other error.
+// Returns (false, nil) for a 404 or 403; (false, err) for any other error.
+//
+// S3 returns 403 Forbidden (instead of 404) when the caller lacks s3:ListBucket
+// on the bucket — a documented AWS behaviour. Treating 403 as "not found" lets
+// PutObject be the real arbiter of write permission, so image downloads are not
+// incorrectly aborted before the upload even begins.
 func (p *S3Provider) Exists(ctx context.Context, key string) (bool, error) {
 	_, err := p.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(p.bucket),
@@ -74,6 +81,12 @@ func (p *S3Provider) Exists(ctx context.Context, key string) (bool, error) {
 	}
 	var notFound *types.NotFound
 	if errors.As(err, &notFound) {
+		return false, nil
+	}
+	// S3 returns 403 instead of 404 when the IAM caller lacks s3:ListBucket.
+	// Treat 403 the same as 404: object is presumed absent, allow PutObject to proceed.
+	var httpErr *awshttp.ResponseError
+	if errors.As(err, &httpErr) && httpErr.HTTPStatusCode() == http.StatusForbidden {
 		return false, nil
 	}
 	return false, fmt.Errorf("upload: s3 head %s: %w", key, err)
