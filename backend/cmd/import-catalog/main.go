@@ -15,6 +15,7 @@
 // Environment variables:
 //
 //	DATABASE_URL           (required)
+//	POKEMON_TCG_API_KEY    optional — raises pokemontcg.io rate limit from 1k to 20k req/day
 //	STORAGE_BACKEND        "local" (default) | "s3"
 //	STORAGE_LOCAL_PATH     local directory (default: ./data/images)
 //	STORAGE_LOCAL_BASE_URL public base URL; required with STORAGE_BACKEND=local
@@ -43,10 +44,34 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/card"
+	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/repository/postgres"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/tcgdex"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/upload"
 )
+
+// seriesPTFallback maps TCGDex serie IDs to their Portuguese names.
+// TCGDex only provides PT-BR translations for TCG Pocket series; this map
+// covers the main Pokémon TCG series so the toggle PT/EN works for them too.
+var seriesPTFallback = map[string]string{
+	"sv":      "Escarlate e Violeta",
+	"swsh":    "Espada e Escudo",
+	"sm":      "Sol e Lua",
+	"xy":      "XY",
+	"bw":      "Preto e Branco",
+	"hgss":    "HeartGold e SoulSilver",
+	"dp":      "Diamante e Pérola",
+	"ex":      "EX",
+	"rs":      "Ruby & Sapphire",
+	"base":    "Base",
+	"gym":     "Ginásio",
+	"neo":     "Neo",
+	"e-card":  "Série-e",
+	"pop":     "POP Series",
+	"legend":  "LEGEND",
+	"online":  "Online",
+	"promo":   "Promo",
+}
 
 // imgJob describes a card image to download in the background worker pool.
 type imgJob struct {
@@ -93,6 +118,11 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	// Build a fallback logo map from pokemontcg.io for promo sets that TCGDex
+	// does not provide logos for. This is best-effort: if the call fails we
+	// simply proceed without fallbacks (no logo for promo sets in that run).
+	pokemontcgLogoFallback := buildPokemontcgLogoFallback(ctx)
 
 	log.Info().Msg("==> Fetching set list from TCGDex")
 
@@ -168,14 +198,34 @@ func main() {
 
 		tcgName := detectTCG(bs.Serie.ID)
 
+		// Apply PT-BR fallback for series that TCGDex does not translate.
+		// TCGDex only provides PT-BR for TCG Pocket; the fallback map covers
+		// all main Pokémon TCG series so the language toggle works for them.
+		serieNamePT := bs.SerieNamePT
+		if serieNamePT == "" {
+			if pt, ok := seriesPTFallback[bs.Serie.ID]; ok {
+				serieNamePT = pt
+			}
+		}
+
 		// Upsert the series and capture its UUID.
-		ser, err := repo.UpsertSeriesWithPT(ctx, bs.Serie.Name, bs.SerieNamePT, tcgName)
+		ser, err := repo.UpsertSeriesWithPT(ctx, bs.Serie.Name, serieNamePT, tcgName)
 		if err != nil {
 			log.Error().Err(err).Str("series", bs.Serie.Name).Msg("upsert series — skipping set")
 			continue
 		}
 
 		releaseDate := parseISO8601(bs.ReleaseDate)
+
+		// Resolve image URL: prefer TCGDex logo; fall back to pokemontcg.io logo
+		// for promo sets that TCGDex does not provide logos for.
+		setImageURL := pngURL(bs.Logo)
+		if setImageURL == "" {
+			if fallback, ok := pokemontcgLogoFallback[bs.ID]; ok {
+				setImageURL = fallback
+				log.Debug().Str("set", bs.ID).Str("logo", setImageURL).Msg("using pokemontcg.io logo fallback")
+			}
+		}
 
 		// cardCount.official is the printed total (e.g. 198 in sv01).
 		// When 0, store NULL via UpsertSet's NULLIF($10, 0).
@@ -190,7 +240,7 @@ func main() {
 			ReleaseDate:  releaseDate,
 			TotalCards:   bs.CardCount.Total,
 			PrintedTotal: bs.CardCount.Official,
-			ImageURL:     pngURL(bs.Logo),
+			ImageURL:     setImageURL,
 			SymbolURL:    pngURL(bs.Symbol),
 		}
 
@@ -210,8 +260,21 @@ func main() {
 		}
 
 		// Download set logo and symbol (inline — 1 per set, no worker pool).
+		// TCGDex logo is a base path (no extension); append ".png" at call time.
+		// For promo sets without a TCGDex logo, use the full pokemontcg.io URL directly.
 		if *downloadImages {
-			downloadSetImages(ctx, httpClient, uploadProvider, repo, dbSet, tcgName, bs.ID, bs.Logo, bs.Symbol)
+			var logoSrcURL string
+			if bs.Logo != "" {
+				logoSrcURL = bs.Logo + ".png"
+			} else if fallback, ok := pokemontcgLogoFallback[bs.ID]; ok {
+				logoSrcURL = fallback // already a full URL with extension
+				log.Debug().Str("set", bs.ID).Msg("using pokemontcg.io logo fallback for image download")
+			}
+			var symbolSrcURL string
+			if bs.Symbol != "" {
+				symbolSrcURL = bs.Symbol + ".png"
+			}
+			downloadSetImages(ctx, httpClient, uploadProvider, repo, dbSet, tcgName, bs.ID, logoSrcURL, symbolSrcURL)
 		}
 
 		// Import all cards for this set using the card refs already in bs.Cards.
@@ -384,17 +447,19 @@ func variantsToFinishes(v tcgdex.Variants) []card.Finish {
 // ----------------------------------------------------------------------------
 
 // downloadSetImages downloads and stores the logo and symbol images for a set.
+// logoSrcURL and symbolSrcURL are fully-resolved URLs ready to fetch (callers
+// are responsible for appending ".png" or using pokemontcg.io URLs as-is).
 func downloadSetImages(
 	ctx context.Context,
 	httpClient *http.Client,
 	provider upload.Provider,
 	repo *postgres.CardRepo,
 	dbSet card.Set,
-	tcg, setID, logoURL, symbolURL string,
+	tcg, setID, logoSrcURL, symbolSrcURL string,
 ) {
-	if logoURL != "" {
+	if logoSrcURL != "" {
 		key := fmt.Sprintf("%s/sets/%s_logo.png", tcg, setID)
-		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, logoURL+".png"); err != nil {
+		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, logoSrcURL); err != nil {
 			log.Warn().Err(err).Str("set", setID).Msg("download set logo failed")
 		} else if newURL != "" {
 			if err := repo.UpdateSetImageURL(ctx, dbSet.ID, newURL); err != nil {
@@ -402,9 +467,9 @@ func downloadSetImages(
 			}
 		}
 	}
-	if symbolURL != "" {
+	if symbolSrcURL != "" {
 		key := fmt.Sprintf("%s/sets/%s_symbol.png", tcg, setID)
-		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, symbolURL+".png"); err != nil {
+		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, symbolSrcURL); err != nil {
 			log.Warn().Err(err).Str("set", setID).Msg("download set symbol failed")
 		} else if newURL != "" {
 			if err := repo.UpdateSetSymbolURL(ctx, dbSet.ID, newURL); err != nil {
@@ -556,4 +621,42 @@ func mostRecent(sets []tcgdex.SetSummary, n int) []tcgdex.SetSummary {
 		n = len(sorted)
 	}
 	return sorted[:n]
+}
+
+// buildPokemontcgLogoFallback queries pokemontcg.io for all sets and returns a
+// map of set code → logo URL. This is used as a fallback image source for promo
+// sets that TCGDex does not supply logos for.
+//
+// The call is best-effort: on any error the function logs a warning and returns
+// an empty map so the rest of the import continues unaffected.
+//
+// POKEMON_TCG_API_KEY is optional but raises the rate limit from 1k to 20k
+// requests per day when provided.
+func buildPokemontcgLogoFallback(ctx context.Context) map[string]string {
+	apiKey := os.Getenv("POKEMON_TCG_API_KEY")
+	ptcgClient := pokemontcgio.New(30*time.Second, apiKey)
+
+	// Use a shorter deadline so a slow pokemontcg.io response does not stall
+	// the whole import for long.
+	fetchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	sets, err := ptcgClient.ListSets(fetchCtx)
+	if err != nil {
+		log.Warn().Err(err).Msg("pokemontcg.io ListSets failed — promo set logos will be skipped")
+		return nil
+	}
+
+	m := make(map[string]string, len(sets))
+	for _, s := range sets {
+		if s.LogoURL != "" {
+			// pokemontcg.io set IDs match TCGDex set IDs for the main game
+			// (e.g. "sv1", "swsh1", "sm1"). The map key is lowercased to be
+			// consistent with TCGDex's own ID casing.
+			m[strings.ToLower(s.ID)] = s.LogoURL
+		}
+	}
+
+	log.Info().Msgf("    pokemontcg.io logo fallback: %d sets loaded", len(m))
+	return m
 }
