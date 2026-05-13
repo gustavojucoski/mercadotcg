@@ -350,7 +350,7 @@ func importCards(
 			ImageLargeURL: imageURL(ref.Image),
 		}
 
-		wasNew, err := upsertCardWithVariants(ctx, repo, dbSet, dbCard, ref, fullCard)
+		wasNew, err := upsertCardWithVariants(ctx, repo, dbSet, &dbCard, ref, fullCard)
 		if err != nil {
 			log.Error().Err(err).Str("card", ref.ID).Msg("upsert card+variants")
 			skipped++
@@ -364,7 +364,7 @@ func importCards(
 
 		if downloadImages && ref.Image != "" {
 			imgJobs <- imgJob{
-				cardID:   dbCard.ID,
+				cardID:   dbCard.ID, // populated by UpsertCard RETURNING id inside upsertCardWithVariants
 				setCode:  dbSet.Code,
 				localID:  ref.LocalID,
 				imageURL: ref.Image,
@@ -376,16 +376,18 @@ func importCards(
 }
 
 // upsertCardWithVariants upserts the card row and creates its variant rows.
+// dbCard is passed by pointer so that UpsertCard's RETURNING clause (which
+// fills dbCard.ID, dbCard.CreatedAt, dbCard.UpdatedAt) is visible to the caller.
 // Returns true if the card was newly inserted (i.e. created_at ≈ updated_at).
 func upsertCardWithVariants(
 	ctx context.Context,
 	repo *postgres.CardRepo,
 	_ card.Set,
-	dbCard card.Card,
+	dbCard *card.Card,
 	ref tcgdex.CardRef,
 	fullCard *tcgdex.Card,
 ) (isNew bool, err error) {
-	if err := repo.UpsertCard(ctx, &dbCard); err != nil {
+	if err := repo.UpsertCard(ctx, dbCard); err != nil {
 		return false, fmt.Errorf("upsert card: %w", err)
 	}
 	// Detect new row: on INSERT the RETURNING timestamps are equal (both set to now()).
