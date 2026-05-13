@@ -1,6 +1,7 @@
 package upload
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,13 +42,20 @@ func NewS3(bucket, region, customURL string) (*S3Provider, error) {
 
 // Put uploads r to S3 under key with public-read ACL.
 // contentType is forwarded as the S3 Content-Type so browsers serve the file correctly.
+// The body is buffered in memory so Content-Length can be set — S3 rejects streaming
+// uploads without a known size (HTTP 411 MissingContentLength).
 func (p *S3Provider) Put(ctx context.Context, key string, r io.Reader, contentType string) (string, error) {
-	_, err := p.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(p.bucket),
-		Key:         aws.String(key),
-		Body:        r,
-		ContentType: aws.String(contentType),
-		ACL:         types.ObjectCannedACLPublicRead,
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("upload: ler body para %s: %w", key, err)
+	}
+	_, err = p.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(p.bucket),
+		Key:           aws.String(key),
+		Body:          bytes.NewReader(body),
+		ContentLength: aws.Int64(int64(len(body))),
+		ContentType:   aws.String(contentType),
+		ACL:           types.ObjectCannedACLPublicRead,
 	})
 	if err != nil {
 		return "", fmt.Errorf("upload: s3 put %s: %w", key, err)
