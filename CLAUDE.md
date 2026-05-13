@@ -83,7 +83,7 @@ MercadoTCG/
 │   │   ├── api/            # servidor HTTP principal
 │   │   ├── migrate/        # CLI: up | down [N] | version | force <v>  — lê DATABASE_URL direto
 │   │   ├── seed/           # popula demo data — lê DATABASE_URL direto (sem config.Load)
-│   │   └── import-catalog/ # importa catálogo via TCGDex API (api.tcgdex.net/v2); lê DATABASE_URL direto (sem config.Load); flags --set, --series, --recent, --download-images; UPSERT idempotente; detecta TCG Pocket via serie.id='tcgp'; enriquece PT-BR via EnrichSet/EnrichCard
+│   │   └── import-catalog/ # importa catálogo via TCGDex API (api.tcgdex.net/v2); lê DATABASE_URL direto; flags --set, --series, --recent, --download-images; UPSERT idempotente; detecta Pocket via serie.id='tcgp'; seriesPTFallback cobre ~17 séries principais; buildPokemontcgLogoFallback busca logos de promo no pokemontcg.io como fallback
 │   ├── internal/
 │   │   ├── domain/
 │   │   │   ├── card/       # Series, Set (name_pt, series_pt, series_id), Card (collector_number, name_pt), Variant, Finish enum
@@ -136,7 +136,7 @@ MercadoTCG/
 │   │   │   ├── tcgplayer/      # legado — não registrado no main.go
 │   │   │   └── cardmarket/     # legado (FlareSolverr) — não registrado no main.go
 │   │   ├── tcgdex/         # client TCGDex API: Client (rate limit 1 req/s, retry 429/5xx), ListSets, GetSet, GetCard, EnrichSet, EnrichCard (bilíngue EN+PT-BR), models BilingualSet/BilingualCard/Variants
-│   │   ├── pokemontcgio/   # client pokemontcg.io: FindCard (preços), ListSets, ListCardsBySet, requestWithRetry — usado apenas para busca de preços, não mais para catálogo
+│   │   ├── pokemontcgio/   # client pokemontcg.io: FindCard (preços), ListSets, ListCardsBySet, requestWithRetry — usado para busca de preços (external-search) e como fallback de logos de promo no import-catalog
 │   │   ├── upload/
 │   │   │   ├── upload.go   # Provider interface (Put/PublicURL/Exists) + LocalProvider + NewFromEnv
 │   │   │   └── s3.go       # S3Provider (aws-sdk-go-v2, ACL public-read, HeadObject para Exists)
@@ -463,7 +463,8 @@ GET  /api/v1/variants/{id}/signal
 
 ## 6. Próximos Passos (priorizados)
 
-1. **Preencher traduções PT-BR** — usar `PATCH /api/v1/admin/series/{id}/name-pt` e `PATCH /api/v1/admin/sets/{id}/name-pt` para as séries/sets mais usados. Prioridade: séries da era Scarlet & Violet e Sword & Shield.
+1. **Configurar S3 e rodar import com --download-images** — storage backend S3 configurado com bucket público + rodar `import-catalog --download-images` para migrar todas as imagens de sets e cartas do CDN TCGDex para storage próprio. Ver ADR-023 para configuração.
+2. **Preencher traduções PT-BR de sets** — séries já têm name_pt via `seriesPTFallback` no import. Sets individuais ainda sem PT (exceto Pocket). Usar `PATCH /api/v1/admin/sets/{id}/name-pt` para os sets mais acessados.
 2. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso as páginas de detalhe de carta mostram "Sem preço" para todas as variantes.
 3. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`.
 4. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
