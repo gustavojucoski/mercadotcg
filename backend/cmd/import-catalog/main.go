@@ -83,14 +83,28 @@ type imgJob struct {
 	tcg        string
 }
 
+// validLangs lists the language codes accepted by the --lang flag.
+// FR/DE/ES/IT share set IDs with EN and should not be imported as separate sets.
+var validLangs = map[string]bool{
+	"en": true, "ja": true, "ko": true, "zh-tw": true,
+	"fr": true, "de": true, "es": true, "it": true, "pt": true,
+}
+
 func main() {
 	setCode := flag.String("set", "", "import a specific set by ID (e.g. sv01)")
 	seriesFilter := flag.String("series", "", "import all sets whose ID starts with this prefix (e.g. sv)")
 	recent := flag.Int("recent", 0, "if > 0, import only the N sets with the highest IDs (heuristic for recent)")
 	downloadImages := flag.Bool("download-images", false, "download card and set images to the storage provider")
+	lang := flag.String("lang", "en", "language to import: en, ja, ko, zh-tw, fr, de, es, it, pt")
 	flag.Parse()
 
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
+
+	if !validLangs[*lang] {
+		log.Fatal().Str("lang", *lang).Msg("invalid --lang value")
+	}
+
+	log.Info().Str("lang", *lang).Msg("==> Starting import")
 
 	_ = godotenv.Load()
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -120,14 +134,16 @@ func main() {
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
-	// Build a fallback logo map from pokemontcg.io for promo sets that TCGDex
-	// does not provide logos for. This is best-effort: if the call fails we
-	// simply proceed without fallbacks (no logo for promo sets in that run).
-	pokemontcgLogoFallback := buildPokemontcgLogoFallback(ctx)
+	// Build a fallback logo map from pokemontcg.io for promo sets only when
+	// importing English — JA/KO/ZH-TW set codes don't match pokemontcg.io IDs.
+	var pokemontcgLogoFallback map[string]string
+	if *lang == "en" {
+		pokemontcgLogoFallback = buildPokemontcgLogoFallback(ctx)
+	}
 
-	log.Info().Msg("==> Fetching set list from TCGDex")
+	log.Info().Str("lang", *lang).Msg("==> Fetching set list from TCGDex")
 
-	allSets, err := client.ListSets(ctx, "en")
+	allSets, err := client.ListSets(ctx, *lang)
 	if err != nil {
 		log.Fatal().Err(err).Msg("fetch set list")
 	}
@@ -199,24 +215,26 @@ func main() {
 	for i, summary := range sets {
 		log.Info().Msgf("[%d/%d] %s — %s (%d cards)", i+1, len(sets), summary.ID, summary.Name, summary.CardCount.Total)
 
-		// Fetch full EN set (with card list) + PT-BR enrichment in one call.
-		bs, err := tcgdex.EnrichSet(ctx, client, summary.ID)
+		// Fetch full set data. For English we also attempt PT-BR enrichment.
+		// For non-English languages the set is fetched in the target language directly,
+		// with no PT-BR secondary fetch.
+		bs, err := fetchSetData(ctx, client, summary.ID, *lang)
 		if err != nil {
 			log.Error().Err(err).Str("set", summary.ID).Msg("fetch set details — skipping")
 			continue
 		}
 		if bs == nil {
-			log.Warn().Str("set", summary.ID).Msg("set not found on TCGDex EN — skipping")
+			log.Warn().Str("set", summary.ID).Str("lang", *lang).Msg("set not found on TCGDex — skipping")
 			continue
 		}
 
 		tcgName := detectTCG(bs.Serie.ID)
 
-		// Apply PT-BR fallback for series that TCGDex does not translate.
-		// TCGDex only provides PT-BR for TCG Pocket; the fallback map covers
-		// all main Pokémon TCG series so the language toggle works for them.
+		// Apply PT-BR series name fallback only for English imports.
+		// TCGDex provides PT-BR names only for TCG Pocket; the fallback map covers
+		// the main Pokémon TCG series so the language toggle works for them.
 		serieNamePT := bs.SerieNamePT
-		if serieNamePT == "" {
+		if *lang == "en" && serieNamePT == "" {
 			if pt, ok := seriesPTFallback[bs.Serie.ID]; ok {
 				serieNamePT = pt
 			}
@@ -232,9 +250,9 @@ func main() {
 		releaseDate := parseISO8601(bs.ReleaseDate)
 
 		// Resolve image URL: prefer TCGDex logo; fall back to pokemontcg.io logo
-		// for promo sets that TCGDex does not provide logos for.
+		// for promo sets that TCGDex does not provide logos for (EN only).
 		setImageURL := pngURL(bs.Logo)
-		if setImageURL == "" {
+		if setImageURL == "" && pokemontcgLogoFallback != nil {
 			if fallback, ok := pokemontcgLogoFallback[bs.ID]; ok {
 				setImageURL = fallback
 				log.Debug().Str("set", bs.ID).Str("logo", setImageURL).Msg("using pokemontcg.io logo fallback")
@@ -250,7 +268,7 @@ func main() {
 			Series:       bs.Serie.Name,
 			SeriesID:     &ser.ID,
 			TCG:          tcgName,
-			Language:     card.LanguageEnglish,
+			Language:     langFromFlag(*lang),
 			ReleaseDate:  releaseDate,
 			TotalCards:   bs.CardCount.Total,
 			PrintedTotal: bs.CardCount.Official,
@@ -280,9 +298,11 @@ func main() {
 			var logoSrcURL string
 			if bs.Logo != "" {
 				logoSrcURL = bs.Logo + ".png"
-			} else if fallback, ok := pokemontcgLogoFallback[bs.ID]; ok {
-				logoSrcURL = fallback // already a full URL with extension
-				log.Debug().Str("set", bs.ID).Msg("using pokemontcg.io logo fallback for image download")
+			} else if pokemontcgLogoFallback != nil {
+				if fallback, ok := pokemontcgLogoFallback[bs.ID]; ok {
+					logoSrcURL = fallback // already a full URL with extension
+					log.Debug().Str("set", bs.ID).Msg("using pokemontcg.io logo fallback for image download")
+				}
 			}
 			var symbolSrcURL string
 			if bs.Symbol != "" {
@@ -293,7 +313,7 @@ func main() {
 
 		// Import all cards for this set using the card refs already in bs.Cards.
 		// This avoids a redundant GetSet call inside importCards.
-		inserted, updated, skipped := importCards(ctx, client, repo, dbSet, tcgName, bs.Cards, jobs, *downloadImages)
+		inserted, updated, skipped := importCards(ctx, client, repo, dbSet, tcgName, bs.Cards, jobs, *downloadImages, *lang)
 		log.Info().Msgf("    cards: %d new, %d updated, %d skipped", inserted, updated, skipped)
 		totalCards += inserted + updated
 	}
@@ -307,12 +327,48 @@ func main() {
 		importedSets, updatedSets, totalCards)
 }
 
+// langFromFlag converts the --lang flag string to the domain Language constant.
+func langFromFlag(s string) card.Language {
+	switch s {
+	case "ja":
+		return card.LanguageJapanese
+	case "ko":
+		return card.LanguageKorean
+	case "zh-tw":
+		return card.LanguageChinese
+	case "pt":
+		return card.LanguagePortuguese
+	default:
+		return card.LanguageEnglish
+	}
+}
+
+// fetchSetData retrieves a set from TCGDex.
+// For English, it also attempts PT-BR enrichment (same as the previous EnrichSet call).
+// For non-English languages, only the target language is fetched — no secondary fetch.
+func fetchSetData(ctx context.Context, c *tcgdex.Client, setID, lang string) (*tcgdex.BilingualSet, error) {
+	if lang == "en" {
+		return tcgdex.EnrichSet(ctx, c, setID)
+	}
+	// Non-EN: fetch the set in the requested language directly.
+	set, err := c.GetSet(ctx, lang, setID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch set %s (%s): %w", setID, lang, err)
+	}
+	if set == nil {
+		return nil, nil
+	}
+	// Wrap in BilingualSet with empty PT fields — the import loop never reads them
+	// for non-EN imports.
+	return &tcgdex.BilingualSet{Set: *set}, nil
+}
+
 // ----------------------------------------------------------------------------
 // Card import
 // ----------------------------------------------------------------------------
 
 // importCards imports all cards from a set. cardRefs are the CardRef entries already
-// fetched from EnrichSet (avoids a redundant API call). Returns (inserted, updated, skipped).
+// fetched from fetchSetData (avoids a redundant API call). Returns (inserted, updated, skipped).
 func importCards(
 	ctx context.Context,
 	client *tcgdex.Client,
@@ -322,11 +378,14 @@ func importCards(
 	cardRefs []tcgdex.CardRef,
 	imgJobs chan<- imgJob,
 	downloadImages bool,
+	lang string,
 ) (inserted, updated, skipped int) {
-	// Only fetch PT-BR card names for TCG Pocket sets.
-	// TCGDex has PT-BR translations for Pocket cards but not for main TCG cards,
-	// so we skip ~20k unnecessary requests for the main set corpus.
-	fetchPTBR := tcgName == "pocket"
+	// Fetch PT-BR card names only when:
+	//   1. We are importing English sets (PT-BR is a secondary enrichment layer), AND
+	//   2. The set belongs to TCG Pocket (TCGDex only translates Pocket cards to PT-BR).
+	// For non-EN imports (JA/KO/ZH-TW) there is no PT-BR secondary language to fetch,
+	// and for main TCG English sets the translations don't exist — both skip the per-card calls.
+	fetchPTBR := lang == "en" && tcgName == "pocket"
 
 	for _, ref := range cardRefs {
 		var namePT string
@@ -350,8 +409,9 @@ func importCards(
 				fullCard = enCard
 			}
 		}
-		// For main TCG sets we skip per-card API calls entirely (saves ~20k requests).
-		// Variants default to Normal+ReverseHolo (the standard pair for most sets).
+		// For main TCG sets (and all non-EN languages) we skip per-card API calls entirely
+		// (saves ~20k requests). Variants default to Normal+ReverseHolo (the standard pair
+		// for most main-set Pokémon TCG cards).
 		// Run `import-catalog --set <code>` later to enrich a specific set's variants.
 
 		dbCard := card.Card{

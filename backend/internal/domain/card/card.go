@@ -43,9 +43,11 @@ type Set struct {
 type Language string
 
 const (
-	LanguagePortuguese Language = "pt"
 	LanguageEnglish    Language = "en"
-	LanguageJapanese   Language = "jp"
+	LanguagePortuguese Language = "pt"
+	LanguageJapanese   Language = "ja"    // ISO 639-1; TCGDex lang code is "ja"
+	LanguageKorean     Language = "ko"    // ISO 639-1; TCGDex lang code is "ko"
+	LanguageChinese    Language = "zh-tw" // Traditional Chinese; TCGDex lang code is "zh-tw"
 )
 
 // Card representa uma carta de TCG, identificada por (set, número).
