@@ -109,6 +109,10 @@ RETURNING id, created_at, updated_at`
 // UpsertSet inserts or updates a set by code. Returns the set with ID populated.
 // Unlike CreateSet, this is idempotent and safe for repeated import runs.
 // Sets with import_source = 'manual' are never modified by the ON CONFLICT path.
+//
+// When the SQL WHERE guard fires (existing row has import_source = 'manual'),
+// the RETURNING clause produces no rows. We detect pgx.ErrNoRows here and fall
+// back to GetSetByCode so the caller always gets a valid s.ID without an error.
 func (r *CardRepo) UpsertSet(ctx context.Context, s *card.Set) error {
 	tcg := s.TCG
 	if tcg == "" {
@@ -123,6 +127,17 @@ func (r *CardRepo) UpsertSet(ctx context.Context, s *card.Set) error {
 		s.Code, s.Name, s.NamePT, s.NameEN, s.Series, s.SeriesID, tcg, string(s.Language),
 		s.ReleaseDate, s.TotalCards, s.PrintedTotal, s.ImageURL, s.SymbolURL, importSource,
 	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The manual guard in the SQL WHERE clause fired — the row was not
+		// updated and RETURNING returned nothing. Fetch the existing row so the
+		// caller receives a valid s.ID without treating this as an error.
+		existing, fetchErr := r.GetSetByCode(ctx, s.Code)
+		if fetchErr != nil {
+			return fmt.Errorf("upsert blocked by manual guard, fetch fallback: %w", fetchErr)
+		}
+		*s = existing
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("upsert card_set: %w", err)
 	}
@@ -317,16 +332,20 @@ func (r *CardRepo) CreateCard(ctx context.Context, c *card.Card) error {
 }
 
 // upsertCardSQL uses (set_id, number) as the natural key (matches the existing UNIQUE constraint).
-// On conflict, updates name, name_pt, collector_number, and image URL so re-runs are safe.
+// On conflict, updates name, name_pt, collector_number, image URLs, and import_source so re-runs are safe.
+// import_source is included so that cards imported via Scrydex are correctly tagged
+// and ListCardsForPTEnrichment (which filters on import_source = 'scrydex') works as expected.
 const upsertCardSQL = `
 INSERT INTO cards (
     set_id, number, collector_number, name, name_pt,
     rarity, supertype, subtypes, types,
-    hp, illustrator, image_small_url, image_large_url, external_ids
+    hp, illustrator, image_small_url, image_large_url, external_ids,
+    import_source
 ) VALUES (
     $1, $2, $3, $4, NULLIF($5, ''),
     NULLIF($6, ''), NULLIF($7, ''), $8, $9,
-    NULLIF($10, 0), NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), $14
+    NULLIF($10, 0), NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), $14,
+    $15
 )
 ON CONFLICT (set_id, number) DO UPDATE SET
     name            = EXCLUDED.name,
@@ -335,6 +354,7 @@ ON CONFLICT (set_id, number) DO UPDATE SET
     rarity          = COALESCE(EXCLUDED.rarity, cards.rarity),
     image_small_url = COALESCE(EXCLUDED.image_small_url, cards.image_small_url),
     image_large_url = COALESCE(EXCLUDED.image_large_url, cards.image_large_url),
+    import_source   = EXCLUDED.import_source,
     updated_at      = now()
 RETURNING id, created_at, updated_at`
 
@@ -345,11 +365,16 @@ func (r *CardRepo) UpsertCard(ctx context.Context, c *card.Card) error {
 	if external == nil {
 		external = map[string]string{}
 	}
+	importSource := c.ImportSource
+	if importSource == "" {
+		importSource = "tcgdex_legacy"
+	}
 
 	err := r.pool.QueryRow(ctx, upsertCardSQL,
 		c.SetID, c.Number, c.CollectorNumber, c.Name, c.NamePT,
 		c.Rarity, c.Supertype, c.Subtypes, c.Types,
 		c.HP, c.Illustrator, c.ImageSmallURL, c.ImageLargeURL, external,
+		importSource,
 	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert card: %w", err)

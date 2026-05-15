@@ -71,6 +71,7 @@ type Card struct {
 	ImageLargeURL string            `json:"image_large_url,omitempty"`
 	ImageURLPT    string            `json:"image_url_pt,omitempty"`
 	ExternalIDs   map[string]string `json:"external_ids,omitempty"`
+	ImportSource  string            `json:"import_source,omitempty"` // values: "scrydex", "tcgdex_only", "tcgdex_legacy", "manual"
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
 }

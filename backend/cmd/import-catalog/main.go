@@ -371,6 +371,7 @@ func importCard(
 		Name:            sc.Name,
 		ImageLargeURL:   sc.Images.Large,
 		ImageSmallURL:   sc.Images.Small,
+		ImportSource:    "scrydex",
 	}
 
 	if err := repo.UpsertCard(ctx, &dbCard); err != nil {
