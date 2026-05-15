@@ -89,7 +89,14 @@ const upsertSetSQL = `
 INSERT INTO card_sets (code, name, name_pt, name_en, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url, symbol_url, import_source)
 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, NULLIF($10, 0), NULLIF($11, 0), NULLIF($12, ''), NULLIF($13, ''), $14)
 ON CONFLICT (code) DO UPDATE SET
-    name          = EXCLUDED.name,
+    -- Preserve an already-English name when the incoming name is Japanese/CJK,
+    -- so re-imports don't clobber DeepL-translated or manually-curated names.
+    name          = CASE
+                      WHEN card_sets.name ~ '[一-龯ぁ-んァ-ヾ]'
+                        OR NOT (EXCLUDED.name ~ '[一-龯ぁ-んァ-ヾ]')
+                      THEN EXCLUDED.name
+                      ELSE card_sets.name
+                    END,
     name_pt       = COALESCE(EXCLUDED.name_pt, card_sets.name_pt),
     name_en       = COALESCE(card_sets.name_en, EXCLUDED.name_en),
     series        = COALESCE(EXCLUDED.series, card_sets.series),
@@ -352,8 +359,11 @@ ON CONFLICT (set_id, number) DO UPDATE SET
     name_pt         = COALESCE(EXCLUDED.name_pt, cards.name_pt),
     collector_number= EXCLUDED.collector_number,
     rarity          = COALESCE(EXCLUDED.rarity, cards.rarity),
-    image_small_url = COALESCE(EXCLUDED.image_small_url, cards.image_small_url),
-    image_large_url = COALESCE(EXCLUDED.image_large_url, cards.image_large_url),
+    -- Never overwrite an existing image URL: UpdateCardImages is the sole owner
+    -- of image_*_url after the initial insert. This prevents re-imports from
+    -- clobbering S3 URLs with temporary Scrydex CDN placeholders.
+    image_small_url = CASE WHEN cards.image_small_url IS NULL OR cards.image_small_url = '' THEN EXCLUDED.image_small_url ELSE cards.image_small_url END,
+    image_large_url = CASE WHEN cards.image_large_url IS NULL OR cards.image_large_url = '' THEN EXCLUDED.image_large_url ELSE cards.image_large_url END,
     import_source   = EXCLUDED.import_source,
     updated_at      = now()
 RETURNING id, created_at, updated_at`

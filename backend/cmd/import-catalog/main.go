@@ -301,22 +301,26 @@ func importExpansion(
 
 	releaseDate := parseISO8601(exp.ReleaseDate)
 
-	// For Japanese expansions the name field already holds the native name.
-	// We store it as both name and name_en so the bilingual toggle has something
-	// to show until a human-curated EN name is entered via the admin UI.
-	nameEN := ""
-	if isJapanese(exp) {
-		nameEN = exp.Name
+	// For Japanese sets, use the English translation as the primary name when
+	// the API actually provides one (no CJK characters). If the API only echoes
+	// the Japanese name back in translation.en, we keep the Japanese as name —
+	// translate-set-names fills name_en via DeepL, and upsertSetSQL preserves
+	// any existing English name on re-import.
+	name := exp.Name
+	nameEN := exp.Translations.En.Name
+	if isJapanese(exp) && nameEN != "" && !containsCJK(nameEN) {
+		name = nameEN
 	}
 
 	dbSet := card.Set{
 		Code:         exp.ID,
-		Name:         exp.Name,
+		Name:         name,
 		NameEN:       nameEN,
 		SeriesID:     &ser.ID,
 		TCG:          "pokemon",
 		Language:     expansionLanguage(exp),
 		ReleaseDate:  releaseDate,
+		TotalCards:   exp.Total,
 		PrintedTotal: exp.PrintedTotal,
 		ImportSource: "scrydex",
 	}
@@ -369,8 +373,8 @@ func importCard(
 		Number:          sc.Number,
 		CollectorNumber: sc.Number,
 		Name:            sc.Name,
-		ImageLargeURL:   sc.Images.Large,
-		ImageSmallURL:   sc.Images.Small,
+		ImageLargeURL:   sc.LargeImageURL(),
+		ImageSmallURL:   sc.SmallImageURL(),
 		ImportSource:    "scrydex",
 	}
 
@@ -382,7 +386,7 @@ func importCard(
 	cnt.incCard(isNew)
 
 	for _, sv := range sc.Variants {
-		finish, ok := mapVariantFinish(sv.Name)
+		finish, label, isPromo, ok := mapVariantFinish(sv.Name)
 		if !ok {
 			log.Warn().
 				Str("card", sc.ID).
@@ -391,8 +395,10 @@ func importCard(
 			continue
 		}
 		v := card.Variant{
-			CardID: dbCard.ID,
-			Finish: finish,
+			CardID:  dbCard.ID,
+			Finish:  finish,
+			Label:   label,
+			IsPromo: isPromo,
 		}
 		if err := repo.UpsertVariant(ctx, &v); err != nil {
 			log.Warn().Err(err).
@@ -419,12 +425,12 @@ func importCard(
 		}
 	}
 
-	if !skipImages && sc.Images.Large != "" && jobs != nil {
+	if !skipImages && sc.LargeImageURL() != "" && jobs != nil {
 		jobs <- imgJob{
 			cardID:    dbCard.ID,
 			setCode:   dbSet.Code,
 			scrydexID: sc.ID,
-			imageURL:  sc.Images.Large,
+			imageURL:  sc.LargeImageURL(),
 		}
 	}
 
@@ -625,9 +631,10 @@ func downloadAndStore(
 		return "", fmt.Errorf("exists check %s: %w", key, err)
 	}
 	if exists {
-		// Already in storage — return empty string so callers know to skip the
-		// DB update (the URL is already correct from a previous run).
-		return "", nil
+		// File already in storage. Return the public URL so callers can still
+		// update the DB — necessary when a re-import accidentally cleared the
+		// DB URL while the S3 file remained intact.
+		return provider.PublicURL(key), nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srcURL, nil)
@@ -656,26 +663,273 @@ func downloadAndStore(
 // Variant mapping
 // ----------------------------------------------------------------------------
 
-// mapVariantFinish converts a Scrydex variant name to the variant_finish ENUM.
-// Returns (finish, true) on a known name, or ("", false) for unknown names so
-// the caller can log and skip gracefully.
-func mapVariantFinish(name string) (card.Finish, bool) {
+// mapVariantFinish converts a Scrydex variant name to a (finish, label, isPromo, ok) tuple.
+// label is non-empty when multiple variants share the same finish but differ visually
+// (e.g. ball-type reverse holos, stamp promos). isPromo flags event/stamp promos so the
+// UI can display the PROMO badge. Returns ("", "", false, false) for names that are too
+// niche to track (jumbo cards, numbered artist stamps, numbered event stamps, error prints).
+func mapVariantFinish(name string) (finish card.Finish, label string, isPromo bool, ok bool) {
 	switch name {
+	// ── Standard finishes ──────────────────────────────────────────────────────
 	case "normal":
-		return card.FinishNormal, true
+		return card.FinishNormal, "", false, true
+	case "normalAlternate":
+		return card.FinishNormal, "Alternate", false, true
+	case "normalUnnumbered":
+		return card.FinishNormal, "Unnumbered", false, true
 	case "holofoil":
-		return card.FinishHolo, true
+		return card.FinishHolo, "", false, true
 	case "reverseHolofoil":
-		return card.FinishReverseHolo, true
-	// First-edition variants and unlimiteds all map to Holo — they differ in
-	// edition stamp, not in the finish itself.
+		return card.FinishReverseHolo, "", false, true
+
+	// ── Holo foil variants ─────────────────────────────────────────────────────
+	case "cosmosHolofoil":
+		return card.FinishCosmosHolo, "", false, true
+	case "crackedIceHolofoil":
+		return card.FinishHolo, "Cracked Ice", false, true
+	case "crackedIcePrismHolofoil":
+		return card.FinishHolo, "Cracked Ice Prism", false, true
+	case "sheenHolofoil":
+		return card.FinishHolo, "Sheen", false, true
+	case "sequinHolofoil":
+		return card.FinishHolo, "Sequin", false, true
+	case "tinselHolofoil":
+		return card.FinishHolo, "Tinsel", false, true
+	case "waterWebHolofoil":
+		return card.FinishHolo, "Water Web", false, true
+	case "prismHolofoil":
+		return card.FinishHolo, "Prism", false, true
+	case "blockPrismHolofoil":
+		return card.FinishHolo, "Block Prism", false, true
+	case "checkeredPrismHolofoil":
+		return card.FinishHolo, "Checkered Prism", false, true
+	case "blisterHolofoil":
+		return card.FinishHolo, "Blister", false, true
+	case "lineHolofoil":
+		return card.FinishHolo, "Line", false, true
+	case "meadowPinkHolofoil":
+		return card.FinishHolo, "Meadow Pink", false, true
+	case "noRaritySymbolHolofoil":
+		return card.FinishHolo, "No Rarity Symbol", false, true
+
+	// ── Reverse holo variants ──────────────────────────────────────────────────
+	case "cosmosReverseHolofoil":
+		return card.FinishReverseHolo, "Cosmos", false, true
+	case "crackedIceReverseHolofoil":
+		return card.FinishReverseHolo, "Cracked Ice", false, true
+	case "mirrorReverseHolofoil":
+		return card.FinishReverseHolo, "Mirror", false, true
+	case "meadowPinkReverseHolofoil":
+		return card.FinishReverseHolo, "Meadow Pink", false, true
+
+	// ── Ball/item reverse holos (Gym sets, 151, Paldean Fates…) ───────────────
+	// Each ball type is a distinct variant — label is the unique key component.
+	case "pokeBallReverseHolofoil":
+		return card.FinishReverseHolo, "Poke Ball", false, true
+	case "masterBallReverseHolofoil":
+		return card.FinishReverseHolo, "Master Ball", false, true
+	case "duskBallReverseHolofoil":
+		return card.FinishReverseHolo, "Dusk Ball", false, true
+	case "energyReverseHolofoil":
+		return card.FinishReverseHolo, "Energy", false, true
+	case "friendBallReverseHolofoil":
+		return card.FinishReverseHolo, "Friend Ball", false, true
+	case "loveBallReverseHolofoil":
+		return card.FinishReverseHolo, "Love Ball", false, true
+	case "quickBallReverseHolofoil":
+		return card.FinishReverseHolo, "Quick Ball", false, true
+	case "premierBallReverseHolofoil":
+		return card.FinishReverseHolo, "Premier Ball", false, true
+	case "rocketReverseHolofoil":
+		return card.FinishReverseHolo, "Rocket", false, true
+
+	// ── Vintage / Base Set variants ────────────────────────────────────────────
+	// Holo ones keep empty label to avoid orphaning existing (card_id,"holo",null) rows.
+	case "firstEdition":
+		return card.FinishFirstEdition, "", false, true
+	case "firstEditionShadowless":
+		return card.FinishFirstEdition, "Shadowless", false, true
 	case "firstEditionHolofoil",
 		"firstEditionShadowlessHolofoil",
-		"unlimitedHolofoil",
+		"firstEditionUnlimitedHolofoil":
+		return card.FinishHolo, "", false, true
+	case "unlimited":
+		return card.FinishUnlimited, "", false, true
+	case "unlimitedShadowless":
+		return card.FinishShadowless, "", false, true
+	case "unlimitedHolofoil",
 		"unlimitedShadowlessHolofoil":
-		return card.FinishHolo, true
+		return card.FinishHolo, "", false, true
+	case "noRaritySymbol":
+		return card.FinishNormal, "No Rarity Symbol", false, true
+	case "nonEReader":
+		return card.FinishNormal, "Non-e-Reader", false, true
+	case "blueBack":
+		return card.FinishNormal, "Blue Back", false, true
+	case "greenBack":
+		return card.FinishNormal, "Green Back", false, true
+	case "goldBorder":
+		return card.FinishNormal, "Gold Border", false, true
+
+	// ── Promo / stamp variants ─────────────────────────────────────────────────
+	// Finish reflects the card's foil treatment; label names the stamp/event.
+	case "leagueStamp":
+		return card.FinishNormal, "League", true, true
+	case "leagueCupStamp":
+		return card.FinishNormal, "League Cup", true, true
+	case "leagueCupStaffStamp":
+		return card.FinishNormal, "League Cup Staff", true, true
+	case "league1stPlaceStamp":
+		return card.FinishNormal, "League 1st Place", true, true
+	case "league2ndPlaceStamp":
+		return card.FinishNormal, "League 2nd Place", true, true
+	case "league3rdPlaceStamp":
+		return card.FinishNormal, "League 3rd Place", true, true
+	case "league4thPlaceStamp":
+		return card.FinishNormal, "League 4th Place", true, true
+	case "staffStamp":
+		return card.FinishNormal, "Staff", true, true
+	case "expansionStamp":
+		return card.FinishNormal, "Expansion", true, true
+	case "expansionStampHolofoil":
+		return card.FinishHolo, "Expansion", true, true
+	case "expansionStaffStamp":
+		return card.FinishNormal, "Expansion Staff", true, true
+	case "cosmosHolofoilExpansionStamp":
+		return card.FinishCosmosHolo, "Expansion", true, true
+	case "playPokemonStamp":
+		return card.FinishNormal, "Play Pokémon", true, true
+	case "playPokemonStampHolofoil",
+		"playPokemonStampHolofoil ": // trailing space is a Scrydex data quality issue
+		return card.FinishHolo, "Play Pokémon", true, true
+	case "playPokemonStampReverseHolofoil",
+		"playPokemonStampReverseHolofoi": // truncated name in Scrydex
+		return card.FinishReverseHolo, "Play Pokémon", true, true
+	case "playPokemonThankYouStamp":
+		return card.FinishNormal, "Play Pokémon Thank You", true, true
+	case "prereleaseStamp":
+		return card.FinishNormal, "Prerelease", true, true
+	case "prereleaseStaffStamp":
+		return card.FinishNormal, "Prerelease Staff", true, true
+	case "professorProgram":
+		return card.FinishNormal, "Professor Program", true, true
+	case "professorProgramStamp":
+		return card.FinishNormal, "Professor Program", true, true
+	case "professorProgramStampHolofoil":
+		return card.FinishHolo, "Professor Program", true, true
+	case "professorProgramStampReverseHolofoil":
+		return card.FinishReverseHolo, "Professor Program", true, true
+	case "professorProgramChampionStamp":
+		return card.FinishNormal, "Professor Program Champion", true, true
+	case "professorProgramTop4Stamp":
+		return card.FinishNormal, "Professor Program Top 4", true, true
+	case "professorProgramTop8Stamp":
+		return card.FinishNormal, "Professor Program Top 8", true, true
+	case "professorProgramStaffStamp":
+		return card.FinishNormal, "Professor Program Staff", true, true
+	case "holidayStamp":
+		return card.FinishNormal, "Holiday", true, true
+	case "snowflakeStamp":
+		return card.FinishNormal, "Snowflake", true, true
+	case "anniversaryStamp":
+		return card.FinishNormal, "Anniversary", true, true
+	case "gamestopStamp":
+		return card.FinishNormal, "GameStop", true, true
+	case "buildABearStamp":
+		return card.FinishNormal, "Build-A-Bear", true, true
+	case "toysRUsStamp":
+		return card.FinishNormal, "Toys R Us", true, true
+	case "ebGamesStamp", "ebgamesStamp":
+		return card.FinishNormal, "EB Games", true, true
+	case "burgerKingStamp", "burgerKingExpansionStamp":
+		return card.FinishNormal, "Burger King", true, true
+	case "sevenElevenStamp":
+		return card.FinishNormal, "7-Eleven", true, true
+	case "pokemonCenterStamp":
+		return card.FinishNormal, "Pokémon Center", true, true
+	case "pokemonDayStamp":
+		return card.FinishNormal, "Pokémon Day", true, true
+	case "pokemonHorizonsStamp":
+		return card.FinishNormal, "Pokémon Horizons", true, true
+	case "pokemonRocksAmericaStamp":
+		return card.FinishNormal, "Pokémon Rocks America", true, true
+	case "pokemonTogetherStamp":
+		return card.FinishNormal, "Pokémon Together", true, true
+	case "pokeTourStamp":
+		return card.FinishNormal, "Poké Tour", true, true
+	case "eeveeStamp":
+		return card.FinishNormal, "Eevee", true, true
+	case "mewtwoStamp":
+		return card.FinishNormal, "Mewtwo", true, true
+	case "darkraiStamp":
+		return card.FinishNormal, "Darkrai", true, true
+	case "ionoStamp":
+		return card.FinishNormal, "Iono", true, true
+	case "detectivePikachuStamp":
+		return card.FinishNormal, "Detective Pikachu", true, true
+	case "legendaryPokemonStamp":
+		return card.FinishNormal, "Legendary Pokémon", true, true
+	case "movieStamp":
+		return card.FinishNormal, "Movie", true, true
+	case "gymChallengeStamp":
+		return card.FinishNormal, "Gym Challenge", true, true
+	case "wStamp":
+		return card.FinishNormal, "W Stamp", true, true
+	case "jrStampRally":
+		return card.FinishNormal, "JR Stamp Rally", true, true
+	case "blackStarPromo":
+		return card.FinishNormal, "Black Star", true, true
+	case "stamp", "stamp22":
+		return card.FinishNormal, "Stamp", true, true
+	case "winnerStamp":
+		return card.FinishNormal, "Winner", true, true
+	case "finalistStamp", "semiFinalistStamp":
+		return card.FinishNormal, "Finalist", true, true
+	case "quarterFinalistStamp":
+		return card.FinishNormal, "Quarter Finalist", true, true
+	case "top16Stamp":
+		return card.FinishNormal, "Top 16", true, true
+	case "top32Stamp", "topThirtyTwo":
+		return card.FinishNormal, "Top 32", true, true
+	case "championStamp":
+		return card.FinishNormal, "Champion", true, true
+	case "championStaff":
+		return card.FinishNormal, "Champion Staff", true, true
+	case "battleRoadStamp", "battleRoadStampAlternate", "battleRoadStampAlternate2":
+		return card.FinishNormal, "Battle Road", true, true
+	case "comicConStamp", "comicConStaffStamp":
+		return card.FinishNormal, "Comic Con", true, true
+	case "genConStamp":
+		return card.FinishNormal, "Gen Con", true, true
+	case "scryeStamp":
+		return card.FinishNormal, "Scrye", true, true
+	case "inquestGamerStamp":
+		return card.FinishNormal, "InQuest Gamer", true, true
+	case "gamesExpoStamp":
+		return card.FinishNormal, "Games Expo", true, true
+	case "rainCityShowcaseStamp":
+		return card.FinishNormal, "Rain City Showcase", true, true
+	case "nationalChampionshipsStamp", "nationalChampionshipsStaffStamp":
+		return card.FinishNormal, "National Championships", true, true
+	case "regionalChampionshipsStamp", "regionalChampionshipsStaffStamp":
+		return card.FinishNormal, "Regional Championships", true, true
+	case "internationalChallengeStamp", "internationalChallengeStaffStamp":
+		return card.FinishNormal, "International Challenge", true, true
+	case "oceaniaChampionshipsStamp", "oceaniaChampionshipsStaffStamp", "oceaniaStamp":
+		return card.FinishNormal, "Oceania Championships", true, true
+	case "asiaChampionshipStamp":
+		return card.FinishNormal, "Asia Championship", true, true
+	case "worldChampionshipsStamp", "worldChampionshipsStaffStamp", "worldsStamp", "worldsStaffStamp":
+		return card.FinishNormal, "World Championships", true, true
+	case "latinStamp", "latinStaffStamp":
+		return card.FinishNormal, "Latin America", true, true
+	case "ultraBallLeagueStamp":
+		return card.FinishNormal, "Ultra Ball League", true, true
+	case "greatBallLeagueStamp":
+		return card.FinishNormal, "Great Ball League", true, true
+
 	default:
-		return "", false
+		return "", "", false, false
 	}
 }
 
@@ -684,6 +938,8 @@ func mapVariantFinish(name string) (card.Finish, bool) {
 // ----------------------------------------------------------------------------
 
 // applyFilters applies the --set, --series, and --lang flags to the expansion list.
+// --lang accepts both ISO codes ("ja") and full names ("Japanese") because the
+// Scrydex API returns full names (e.g. "Japanese") while users type short codes.
 func applyFilters(exps []scrydex.Expansion, setFilter, seriesFilter, langFilter string) []scrydex.Expansion {
 	var out []scrydex.Expansion
 	for _, e := range exps {
@@ -693,8 +949,13 @@ func applyFilters(exps []scrydex.Expansion, setFilter, seriesFilter, langFilter 
 		if seriesFilter != "" && !strings.EqualFold(e.Series, seriesFilter) {
 			continue
 		}
-		if langFilter != "all" && !strings.EqualFold(e.Language, langFilter) {
-			continue
+		if langFilter != "all" {
+			// Normalize both sides via expansionLanguage so "ja" matches "Japanese".
+			want := expansionLanguage(scrydex.Expansion{Language: langFilter})
+			got := expansionLanguage(e)
+			if got != want {
+				continue
+			}
 		}
 		out = append(out, e)
 	}
@@ -743,6 +1004,17 @@ func parseISO8601(s string) *time.Time {
 		return &t
 	}
 	return nil
+}
+
+// containsCJK reports whether s contains CJK unified ideographs, hiragana, or
+// katakana — used to detect whether a "translated" name is actually Japanese.
+func containsCJK(s string) bool {
+	for _, r := range s {
+		if (r >= 0x4E00 && r <= 0x9FFF) || (r >= 0x3040 && r <= 0x30FF) {
+			return true
+		}
+	}
+	return false
 }
 
 // contentTypeFromKey derives a MIME type from the file extension in a storage key.

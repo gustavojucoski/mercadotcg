@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultBaseURL   = "https://api.scrydex.io"
+	defaultBaseURL   = "https://api.scrydex.com"
 	defaultReqPerSec = 2.0
 	maxAttempts      = 3
 	// Initial backoff before first retry. Each subsequent attempt doubles it:
@@ -80,7 +80,7 @@ func (c *Client) ListExpansions(ctx context.Context) ([]Expansion, error) {
 	var all []Expansion
 	page := 1
 	for {
-		url := fmt.Sprintf("%s/pokemon/v1/expansions?page=%d", c.baseURL, page)
+		url := fmt.Sprintf("%s/pokemon/v1/expansions?page=%d&pageSize=200", c.baseURL, page)
 		var resp listExpansionsResponse
 		if err := c.getJSON(ctx, url, &resp); err != nil {
 			return nil, fmt.Errorf("scrydex: list expansions page %d: %w", page, err)
