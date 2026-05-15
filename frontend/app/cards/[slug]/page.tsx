@@ -175,7 +175,7 @@ export default async function CardDetailPage({ params }: Props) {
                   <dt className="w-32 shrink-0 text-sm text-zinc-400">Número</dt>
                   <dd className="text-sm text-zinc-900 dark:text-zinc-100 font-mono">
                     {card.collector_number}
-                    {set.total_cards > 0 && <>/{set.total_cards}</>}
+                    {set.printed_total > 0 && <>/{set.printed_total}</>}
                   </dd>
                 </div>
                 <div className="flex items-start gap-2">

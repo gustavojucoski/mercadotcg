@@ -65,6 +65,7 @@ export interface TCGSet {
   series_id: string
   release_date: string | null
   total_cards: number
+  printed_total: number
   image_url: string
   symbol_url?: string
   tcg: string
