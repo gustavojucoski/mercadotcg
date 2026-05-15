@@ -21,23 +21,24 @@ type Series struct {
 // Set representa uma coleção/expansão de um TCG.
 // O campo TCG identifica o jogo ao qual o set pertence (ex.: "pokemon", "magic").
 type Set struct {
-	ID          uuid.UUID  `json:"id"`
-	Code        string     `json:"code"`
-	Name        string     `json:"name"`
-	Series      string     `json:"series,omitempty"`
-	SeriesID    *uuid.UUID `json:"-"`                   // FK interna, não exposta no JSON
-	SeriesPT    string     `json:"series_pt,omitempty"` // nome PT-BR da série (via JOIN)
-	NamePT      string     `json:"name_pt,omitempty"`   // nome PT-BR do set
-	NameEN      string     `json:"name_en,omitempty"`   // nome EN para sets não-ingleses (ex.: JA, KO); preenchido manualmente pelo admin
-	TCG         string     `json:"tcg"`
-	Language    Language   `json:"language"`
-	ReleaseDate *time.Time `json:"release_date,omitempty"`
+	ID           uuid.UUID  `json:"id"`
+	Code         string     `json:"code"`
+	Name         string     `json:"name"`
+	Series       string     `json:"series,omitempty"`
+	SeriesID     *uuid.UUID `json:"-"`                   // FK interna, não exposta no JSON
+	SeriesPT     string     `json:"series_pt,omitempty"` // nome PT-BR da série (via JOIN)
+	NamePT       string     `json:"name_pt,omitempty"`   // nome PT-BR do set
+	NameEN       string     `json:"name_en,omitempty"`   // nome EN para sets não-ingleses (ex.: JA, KO); preenchido manualmente pelo admin
+	TCG          string     `json:"tcg"`
+	Language     Language   `json:"language"`
+	ReleaseDate  *time.Time `json:"release_date,omitempty"`
 	TotalCards   int        `json:"total_cards,omitempty"`
 	PrintedTotal int        `json:"printed_total,omitempty"`
 	ImageURL     string     `json:"image_url,omitempty"`
 	SymbolURL    string     `json:"symbol_url,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ImportSource string     `json:"import_source,omitempty"` // values: "scrydex", "tcgdex_only", "tcgdex_legacy", "manual"
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // Language enumera os idiomas suportados pela base de cartas.

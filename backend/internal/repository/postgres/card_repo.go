@@ -86,35 +86,42 @@ func (r *CardRepo) CreateSet(ctx context.Context, s *card.Set) error {
 }
 
 const upsertSetSQL = `
-INSERT INTO card_sets (code, name, name_pt, name_en, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url, symbol_url)
-VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, NULLIF($10, 0), NULLIF($11, 0), NULLIF($12, ''), NULLIF($13, ''))
+INSERT INTO card_sets (code, name, name_pt, name_en, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url, symbol_url, import_source)
+VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, NULLIF($10, 0), NULLIF($11, 0), NULLIF($12, ''), NULLIF($13, ''), $14)
 ON CONFLICT (code) DO UPDATE SET
-    name         = EXCLUDED.name,
-    name_pt      = COALESCE(EXCLUDED.name_pt, card_sets.name_pt),
-    name_en      = COALESCE(card_sets.name_en, EXCLUDED.name_en),
-    series       = COALESCE(EXCLUDED.series, card_sets.series),
-    series_id    = COALESCE(EXCLUDED.series_id, card_sets.series_id),
-    tcg          = EXCLUDED.tcg,
-    release_date = COALESCE(EXCLUDED.release_date, card_sets.release_date),
-    language     = EXCLUDED.language,
-    total_cards  = COALESCE(EXCLUDED.total_cards, card_sets.total_cards),
-    printed_total= COALESCE(EXCLUDED.printed_total, card_sets.printed_total),
-    image_url    = COALESCE(EXCLUDED.image_url, card_sets.image_url),
-    symbol_url   = COALESCE(EXCLUDED.symbol_url, card_sets.symbol_url),
-    updated_at   = now()
+    name          = EXCLUDED.name,
+    name_pt       = COALESCE(EXCLUDED.name_pt, card_sets.name_pt),
+    name_en       = COALESCE(card_sets.name_en, EXCLUDED.name_en),
+    series        = COALESCE(EXCLUDED.series, card_sets.series),
+    series_id     = COALESCE(EXCLUDED.series_id, card_sets.series_id),
+    tcg           = EXCLUDED.tcg,
+    release_date  = COALESCE(EXCLUDED.release_date, card_sets.release_date),
+    language      = EXCLUDED.language,
+    total_cards   = COALESCE(EXCLUDED.total_cards, card_sets.total_cards),
+    printed_total = COALESCE(EXCLUDED.printed_total, card_sets.printed_total),
+    image_url     = COALESCE(EXCLUDED.image_url, card_sets.image_url),
+    symbol_url    = COALESCE(EXCLUDED.symbol_url, card_sets.symbol_url),
+    import_source = EXCLUDED.import_source,
+    updated_at    = now()
+WHERE card_sets.import_source <> 'manual'
 RETURNING id, created_at, updated_at`
 
 // UpsertSet inserts or updates a set by code. Returns the set with ID populated.
 // Unlike CreateSet, this is idempotent and safe for repeated import runs.
+// Sets with import_source = 'manual' are never modified by the ON CONFLICT path.
 func (r *CardRepo) UpsertSet(ctx context.Context, s *card.Set) error {
 	tcg := s.TCG
 	if tcg == "" {
 		tcg = "pokemon"
 	}
+	importSource := s.ImportSource
+	if importSource == "" {
+		importSource = "tcgdex_legacy"
+	}
 
 	err := r.pool.QueryRow(ctx, upsertSetSQL,
 		s.Code, s.Name, s.NamePT, s.NameEN, s.Series, s.SeriesID, tcg, string(s.Language),
-		s.ReleaseDate, s.TotalCards, s.PrintedTotal, s.ImageURL, s.SymbolURL,
+		s.ReleaseDate, s.TotalCards, s.PrintedTotal, s.ImageURL, s.SymbolURL, importSource,
 	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert card_set: %w", err)
@@ -130,6 +137,7 @@ SELECT
     COALESCE(cs.tcg, 'pokemon'), cs.language, cs.release_date,
     COALESCE(cs.total_cards, 0), COALESCE(cs.printed_total, 0),
     COALESCE(cs.image_url, ''), COALESCE(cs.symbol_url, ''),
+    COALESCE(cs.import_source, ''),
     cs.created_at, cs.updated_at
 FROM card_sets cs
 LEFT JOIN card_series cr ON cr.id = cs.series_id
@@ -145,6 +153,7 @@ func (r *CardRepo) GetSetByCode(ctx context.Context, code string) (card.Set, err
 		&s.Series, &s.SeriesPT, &s.SeriesID,
 		&s.TCG, &lang, &s.ReleaseDate,
 		&s.TotalCards, &s.PrintedTotal, &s.ImageURL, &s.SymbolURL,
+		&s.ImportSource,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
