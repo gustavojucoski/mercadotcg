@@ -53,7 +53,7 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 
 ## Status Atual
 
-**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via TCGDex (208 sets, TCG Pocket) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio (208 sets, 23.160 cartas EN + PT-BR para Pocket).
+**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro.
 
 ### Migrations
 
@@ -75,17 +75,26 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 | 000015 | `card_sets.printed_total INTEGER` — para autocomplete de formato `"110/217"` |
 | 000016 | `card_sets.symbol_url`; `tcg='pocket'` no CHECK; índices GIN para autocomplete bilíngue |
 | 000017 | `cards.image_url_pt` — imagem PT-BR (TCG Pocket via TCGDex) |
+| 000019 | `card_sets.import_source`, `cards.import_source` VARCHAR(32) DEFAULT `'tcgdex_legacy'` (ADR-028) |
+
+### Fontes de catálogo (PR #15 — ADRs 027–028)
+
+| Fonte | Papel | Dados |
+|---|---|---|
+| **Scrydex** (`api.scrydex.io`) | Primário | Sets EN + JA, cartas, variantes, imagens |
+| **TCGDex** (`api.tcgdex.net`) | Complemento PT-BR | `name_pt`, `image_url_pt` via `--enrich-pt` |
+
+`cmd/import-catalog` flags: `--set`, `--series`, `--lang`, `--dry-run`, `--skip-images`, `--enrich-pt`, `--enrich-limit`.
+`import_source` valores: `'scrydex'` · `'tcgdex_only'` · `'tcgdex_legacy'` · `'manual'` (protegido de sobrescrita).
 
 ## Próximos Passos
 
-1. **Remover remotePatterns de transição** — `assets.tcgdex.net` e `images.pokemontcg.io` em `next.config.ts` após confirmar que tudo aponta para o S3 próprio.
-2. **Job de agregação diária** — `cmd/aggregate` chama `PriceDailyRepo.RebuildDay(today)`. Sem isso: "Sem preço" em todas as cartas.
-3. **Matching service** — `internal/service/matching`: observação raw → variant_id → cria `external_card_ref`.
-4. **Pipeline scraping → price_history** — ligar scrapers ao storage. Hoje `external-search` não persiste.
-5. **Frontend estoque de singles** — `/lojas/[id]/singles` com seleção de cartas via API de catálogo.
-6. **Frontend estoque de selados** — `/lojas/[id]/selados`.
-7. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries.
-8. **Marketplace público** — listings + pagamentos (ver `docs/gaps.md`).
+1. **Executar reimportação completa** — `import-catalog` com plano Scrydex Growth (50k créditos) para substituir os 208 sets legados TCGDex. Depois `--enrich-pt` para PT-BR.
+2. **Remover remotePatterns de transição** — `assets.tcgdex.net` e `images.pokemontcg.io` em `next.config.ts` após confirmar que tudo aponta para o S3 próprio.
+3. **Frontend estoque de singles** — `/lojas/[id]/singles` com seleção de cartas via API de catálogo.
+4. **Frontend estoque de selados** — `/lojas/[id]/selados`.
+5. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries (import_source tests já adicionados no PR #15).
+6. **Marketplace público** — listings + pagamentos (ver `docs/gaps.md`).
 
 ## Convenções Críticas
 
