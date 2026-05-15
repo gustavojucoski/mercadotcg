@@ -611,6 +611,67 @@ func (r *CardRepo) UpdateCardNamePT(ctx context.Context, id uuid.UUID, namePT st
 	return nil
 }
 
+// updateCardPTSQL only writes non-empty values, preserving whatever is already
+// stored. This lets the enricher run multiple times safely and fill each field
+// independently as TCGDex data becomes available.
+const updateCardPTSQL = `
+UPDATE cards
+SET
+    name_pt      = CASE WHEN $2 <> '' THEN $2 ELSE name_pt END,
+    image_url_pt = CASE WHEN $3 <> '' THEN $3 ELSE image_url_pt END,
+    updated_at   = now()
+WHERE id = $1`
+
+// CardEnrichmentCandidate is the minimal projection needed by the PT enrichment
+// loop: the DB id, the collector number to build the TCGDex card ID, and the
+// set code to scope the TCGDex request and the S3 key.
+type CardEnrichmentCandidate struct {
+	ID              uuid.UUID
+	CollectorNumber string
+	SetCode         string
+}
+
+const listCardsForPTEnrichmentSQL = `
+SELECT c.id, c.collector_number, cs.code AS set_code
+FROM cards c
+JOIN card_sets cs ON cs.id = c.set_id
+WHERE c.import_source = 'scrydex'
+  AND (c.name_pt IS NULL OR c.image_url_pt IS NULL)
+LIMIT $1`
+
+// ListCardsForPTEnrichment returns up to limit cards imported from Scrydex that
+// are still missing a PT-BR name or PT-BR image.
+func (r *CardRepo) ListCardsForPTEnrichment(ctx context.Context, limit int) ([]CardEnrichmentCandidate, error) {
+	rows, err := r.pool.Query(ctx, listCardsForPTEnrichmentSQL, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list cards for pt enrichment: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CardEnrichmentCandidate
+	for rows.Next() {
+		var c CardEnrichmentCandidate
+		if err := rows.Scan(&c.ID, &c.CollectorNumber, &c.SetCode); err != nil {
+			return nil, fmt.Errorf("scan enrichment candidate: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpdateCardPT writes namePT and/or imageURLPT only when the supplied strings
+// are non-empty, leaving already-populated fields untouched.
+func (r *CardRepo) UpdateCardPT(ctx context.Context, cardID uuid.UUID, namePT, imageURLPT string) error {
+	tag, err := r.pool.Exec(ctx, updateCardPTSQL, cardID, namePT, imageURLPT)
+	if err != nil {
+		return fmt.Errorf("update card pt fields: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ----------------------------------------------------------------------------
 // Variant display — batch lookup for stock enrichment
 // ----------------------------------------------------------------------------
