@@ -28,6 +28,7 @@ type Set struct {
 	SeriesID    *uuid.UUID `json:"-"`                   // FK interna, não exposta no JSON
 	SeriesPT    string     `json:"series_pt,omitempty"` // nome PT-BR da série (via JOIN)
 	NamePT      string     `json:"name_pt,omitempty"`   // nome PT-BR do set
+	NameEN      string     `json:"name_en,omitempty"`   // nome EN para sets não-ingleses (ex.: JA, KO); preenchido manualmente pelo admin
 	TCG         string     `json:"tcg"`
 	Language    Language   `json:"language"`
 	ReleaseDate *time.Time `json:"release_date,omitempty"`

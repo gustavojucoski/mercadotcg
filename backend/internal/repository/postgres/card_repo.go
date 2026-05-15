@@ -86,11 +86,12 @@ func (r *CardRepo) CreateSet(ctx context.Context, s *card.Set) error {
 }
 
 const upsertSetSQL = `
-INSERT INTO card_sets (code, name, name_pt, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url, symbol_url)
-VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, NULLIF($9, 0), NULLIF($10, 0), NULLIF($11, ''), NULLIF($12, ''))
+INSERT INTO card_sets (code, name, name_pt, name_en, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url, symbol_url)
+VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, NULLIF($10, 0), NULLIF($11, 0), NULLIF($12, ''), NULLIF($13, ''))
 ON CONFLICT (code) DO UPDATE SET
     name         = EXCLUDED.name,
     name_pt      = COALESCE(EXCLUDED.name_pt, card_sets.name_pt),
+    name_en      = COALESCE(card_sets.name_en, EXCLUDED.name_en),
     series       = COALESCE(EXCLUDED.series, card_sets.series),
     series_id    = COALESCE(EXCLUDED.series_id, card_sets.series_id),
     tcg          = EXCLUDED.tcg,
@@ -112,7 +113,7 @@ func (r *CardRepo) UpsertSet(ctx context.Context, s *card.Set) error {
 	}
 
 	err := r.pool.QueryRow(ctx, upsertSetSQL,
-		s.Code, s.Name, s.NamePT, s.Series, s.SeriesID, tcg, string(s.Language),
+		s.Code, s.Name, s.NamePT, s.NameEN, s.Series, s.SeriesID, tcg, string(s.Language),
 		s.ReleaseDate, s.TotalCards, s.PrintedTotal, s.ImageURL, s.SymbolURL,
 	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
@@ -123,7 +124,7 @@ func (r *CardRepo) UpsertSet(ctx context.Context, s *card.Set) error {
 
 const selectSetByCodeSQL = `
 SELECT
-    cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''),
+    cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''), COALESCE(cs.name_en, ''),
     COALESCE(cr.name, cs.series, ''), COALESCE(cr.name_pt, ''),
     cs.series_id,
     COALESCE(cs.tcg, 'pokemon'), cs.language, cs.release_date,
@@ -140,7 +141,7 @@ func (r *CardRepo) GetSetByCode(ctx context.Context, code string) (card.Set, err
 	var lang string
 
 	err := r.pool.QueryRow(ctx, selectSetByCodeSQL, code).Scan(
-		&s.ID, &s.Code, &s.Name, &s.NamePT,
+		&s.ID, &s.Code, &s.Name, &s.NamePT, &s.NameEN,
 		&s.Series, &s.SeriesPT, &s.SeriesID,
 		&s.TCG, &lang, &s.ReleaseDate,
 		&s.TotalCards, &s.PrintedTotal, &s.ImageURL, &s.SymbolURL,
@@ -164,6 +165,22 @@ func (r *CardRepo) UpdateSetNamePT(ctx context.Context, id uuid.UUID, namePT str
 	tag, err := r.pool.Exec(ctx, updateSetNamePTSQL, id, namePT)
 	if err != nil {
 		return fmt.Errorf("update set name_pt: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const updateSetNameENSQL = `
+UPDATE card_sets SET name_en = $2, updated_at = now() WHERE id = $1`
+
+// UpdateSetNameEN atualiza o nome em inglês de um set não-EN (ex.: JA, KO, ZH-TW).
+// Preenchido manualmente pelo admin via UI; nunca sobrescrito por imports automáticos.
+func (r *CardRepo) UpdateSetNameEN(ctx context.Context, id uuid.UUID, nameEN string) error {
+	tag, err := r.pool.Exec(ctx, updateSetNameENSQL, id, nameEN)
+	if err != nil {
+		return fmt.Errorf("update set name_en: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -410,7 +427,7 @@ SELECT
     COALESCE(c.image_small_url, ''), COALESCE(c.image_large_url, ''),
     COALESCE(c.image_url_pt, ''),
     c.external_ids, c.created_at, c.updated_at,
-    s.id, s.code, s.name, COALESCE(s.name_pt, ''),
+    s.id, s.code, s.name, COALESCE(s.name_pt, ''), COALESCE(s.name_en, ''),
     COALESCE(cr.name, s.series, ''), COALESCE(cr.name_pt, ''),
     s.series_id,
     COALESCE(s.tcg, 'pokemon'),
@@ -459,7 +476,7 @@ func (r *CardRepo) LookupCards(
 			&cw.Card.HP, &cw.Card.Illustrator, &cw.Card.ImageSmallURL, &cw.Card.ImageLargeURL,
 			&cw.Card.ImageURLPT,
 			&cw.Card.ExternalIDs, &cw.Card.CreatedAt, &cw.Card.UpdatedAt,
-			&cw.Set.ID, &cw.Set.Code, &cw.Set.Name, &cw.Set.NamePT,
+			&cw.Set.ID, &cw.Set.Code, &cw.Set.Name, &cw.Set.NamePT, &cw.Set.NameEN,
 			&cw.Set.Series, &cw.Set.SeriesPT, &cw.Set.SeriesID,
 			&cw.Set.TCG,
 			&lang, &cw.Set.ReleaseDate,
@@ -707,7 +724,7 @@ func (r *CardRepo) ListVariantsByCard(ctx context.Context, cardID uuid.UUID) ([]
 // ----------------------------------------------------------------------------
 
 const listSetsByTCGSQL = `
-SELECT cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''),
+SELECT cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''), COALESCE(cs.name_en, ''),
        cs.series_id,
        COALESCE(cr.name, cs.series, '') AS series_name,
        COALESCE(cr.name_pt, '') AS series_name_pt,
@@ -747,7 +764,7 @@ func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid
 		var s SetWithSeries
 		var lang string
 		if err := rows.Scan(
-			&s.ID, &s.Code, &s.Name, &s.NamePT,
+			&s.ID, &s.Code, &s.Name, &s.NamePT, &s.NameEN,
 			&s.SeriesID,
 			&s.SeriesName, &s.SeriesNamePT,
 			&s.TCG,
@@ -869,7 +886,7 @@ SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text,
        COALESCE(c.image_small_url, ''), COALESCE(c.image_large_url, ''),
        COALESCE(c.image_url_pt, ''),
        c.external_ids, c.created_at, c.updated_at,
-       s.id, s.code, s.name, COALESCE(s.name_pt, ''),
+       s.id, s.code, s.name, COALESCE(s.name_pt, ''), COALESCE(s.name_en, ''),
        COALESCE(cr.name, s.series, '') AS series_name,
        COALESCE(cr.name_pt, '') AS series_name_pt,
        s.series_id,
@@ -903,7 +920,7 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 		&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
 		&c.ImageURLPT,
 		&c.ExternalIDs, &c.CreatedAt, &c.UpdatedAt,
-		&s.ID, &s.Code, &s.Name, &s.NamePT,
+		&s.ID, &s.Code, &s.Name, &s.NamePT, &s.NameEN,
 		&s.Series, &s.SeriesPT, &s.SeriesID,
 		&s.TCG, &lang, &s.ReleaseDate,
 		&s.TotalCards, &s.PrintedTotal,
