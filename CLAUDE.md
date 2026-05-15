@@ -1,533 +1,113 @@
-# MercadoTCG — Memória do Projeto
+# MercadoTCG
 
-> Documento vivo. Atualizar a cada decisão arquitetural relevante e ao final de cada fase de trabalho.
+> Documento vivo. Atualizar a cada decisão arquitetural e após cada merge.
+> Referências detalhadas em [`docs/`](docs/): [ADRs](docs/adrs.md) · [API & Rotas](docs/api.md) · [Diretórios](docs/directory.md) · [Gaps & Pagamentos](docs/gaps.md)
 
-## 0. Agentes Especializados e Workflow de Desenvolvimento
+## Visão
 
-Este projeto possui agentes especializados. **Sempre delegue a tarefa ao agente correto antes de escrever qualquer código.** Use o agente via ferramenta `Agent` com o `subagent_type` correspondente.
+Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e **gestão de coleção** com rigor de variantes (Master Ball, Poke Ball Mirror, Holo, Reverse Holo, etc.). Multi-TCG por design.
 
-| Agente | `subagent_type` | Quando usar |
-|---|---|---|
-| Go Backend Engineer | `go-backend-engineer` | Qualquer código Go: handlers, repositórios, serviços, scrapers, migrations, testes de integração Go |
-| Next.js Frontend Engineer | `nextjs-frontend-engineer` | Qualquer código frontend: pages, components, lib/, hooks, estilos Tailwind, otimizações de performance |
-| Senior Software Architect | `senior-software-architect` | Decisões arquiteturais, novos ADRs, avaliação de tecnologias, design de módulos novos, **qualquer pesquisa técnica** |
-| Product Manager | `product-manager` | Requisitos, fluxo de UX, identificação de riscos, definição de MVP, priorização de backlog |
-| QA / SDET Engineer | `qa-sdet-engineer` | Testes integrados com testcontainers, E2E com Playwright, revisão de cobertura, CI/CD |
-
----
-
-### Workflow obrigatório para qualquer alteração de código
-
-```
-1. PM          → define requisitos, escopo, critérios de aceite
-2. Arquiteto   → design da solução, ADRs se necessário, plano para os agentes de código
-3. Branch      → criar branch com nome descritivo (feat/, fix/, refactor/)
-4. Código      → agentes de backend e/ou frontend implementam na branch, fazendo commits incrementais
-5. QA          → qa-sdet-engineer revisa o que foi implementado e escreve/propõe testes
-6. PR          → abrir Pull Request da branch para main
-7. Revisão     → Claude principal revisa a PR antes de aprovar
-8. Merge       → squash merge para main após aprovação
-9. Docs        → atualizar CLAUDE.md no main: migrations, ADRs, fase, estrutura, convenções e próximos passos
-```
-
-**Regras absolutas:**
-- **Nenhuma linha de código é escrita sem passar por PM → Arquiteto antes.** Não há exceções, nem para correções pequenas.
-- **Todo código vai para uma branch.** Nunca commitar diretamente em `main`.
-- **Toda pesquisa técnica** (bibliotecas, APIs externas, padrões, viabilidade) é feita pelo `senior-software-architect`.
-- **QA é obrigatório** após cada entrega dos agentes de código. O Claude principal spawna o QA automaticamente, sem precisar o usuário solicitar.
-- **Docs são obrigatórios após cada merge.** O Claude principal atualiza o CLAUDE.md imediatamente após o squash merge, sem precisar o usuário solicitar. O que atualizar: tabela de migrations (se houver), ADRs novos ou alterados, fase atual, estrutura de diretórios (arquivos novos), convenções novas e próximos passos.
-- Tarefas puramente de **leitura/análise** (explicar código, responder perguntas) podem ser feitas inline pelo Claude principal.
-- Para mudanças que tocam **ambas as camadas** (backend + frontend), spawne os agentes de código em paralelo após o Arquiteto definir o plano.
-- Se um agente precisar de contexto de sessão anterior, inclua no prompt os tipos, interfaces e convenções relevantes.
-
-### Workflow de revisão de feature ou decisão (quando solicitado)
-
-Quando o usuário pedir para "revisar", "analisar" ou "avaliar" algo:
-1. Spawnar `product-manager` — requisitos, fluxo de UX, riscos de produto, gaps de experiência.
-2. Com o output do PM, spawnar `senior-software-architect` — ajustes arquiteturais, validação das decisões de design.
-3. Apresentar os dois outputs consolidados ao usuário.
-
-## 1. Visão
-
-Marketplace e rastreador de preços de Pokémon TCG, focado em **vendas reais** (na própria plataforma e via scraping de fontes externas) e em **gestão de coleção** com rigor de variantes (Master Ball, Poke Ball Mirror, Holo, Reverse Holo, etc.).
-
-Diferenciais perseguidos:
-
-- Histórico de preços com profundidade temporal real (séries diárias, anos de dados).
-- Variantes tratadas como cidadãos de primeira classe — não como atributo solto.
-- Conversão cambial preservando auditabilidade (preço original + preço BRL + cotação usada na ingestão).
-- Backend de alta performance preparado para milhões de observações.
-
-## 2. Stack
+## Stack
 
 | Camada | Tecnologia |
 |---|---|
 | Backend | Go 1.25 (`chi`, `pgx/v5`, `shopspring/decimal`, `zerolog`, `golang-jwt/jwt/v5`, `resend-go/v2`) |
-| Banco | PostgreSQL 16 (local via Docker), migrations com `golang-migrate` |
+| Banco | PostgreSQL 16 (Docker local), migrations com `golang-migrate` |
 | Frontend | Next.js 16 (App Router) + TypeScript + Tailwind CSS 4 |
-| Auth | JWT (access token em memória, refresh token em `localStorage`), Google OAuth 2.0, email/senha com bcrypt cost 12 |
-| Email | Resend (`resend-go/v2`), `NoopProvider` quando sem chave |
-| Scrapers | Go: `goquery` (LigaPokemon), pokewallet.io API (TCGPlayer+Cardmarket), Scrydex (eBay graded) |
+| Auth | JWT (access em memória, refresh em `localStorage`), Google OAuth 2.0, bcrypt cost 12 |
+| Scrapers | goquery (LigaPokemon), pokewallet.io (TCGPlayer+Cardmarket), Scrydex (eBay graded) |
+| Storage | S3 (`mercadotcg-images-549803608550-sa-east-1-an`, `sa-east-1`) via `upload.Provider` |
 
-## 3. Estrutura de Diretórios
+## Agentes & Workflow
 
+| Agente | `subagent_type` | Quando usar |
+|---|---|---|
+| Go Backend Engineer | `go-backend-engineer` | Qualquer código Go |
+| Next.js Frontend Engineer | `nextjs-frontend-engineer` | Qualquer código frontend |
+| Senior Software Architect | `senior-software-architect` | Decisões arquiteturais, pesquisa técnica, novos ADRs |
+| Product Manager | `product-manager` | Requisitos, UX, riscos, priorização |
+| QA / SDET Engineer | `qa-sdet-engineer` | Testes integrados, E2E, CI/CD |
+
+**Workflow obrigatório:**
 ```
-MercadoTCG/
-├── CLAUDE.md
-├── backend/
-│   ├── go.mod                    # go 1.25
-│   ├── .env / .env.example
-│   ├── Dockerfile                # multi-stage: golang:1.25-alpine builder + alpine:3.20 runtime
-│   ├── docker-compose.yml        # db, adminer, migrate, seed, api, import-catalog(profile)
-│   ├── cmd/
-│   │   ├── api/            # servidor HTTP principal
-│   │   ├── migrate/        # CLI: up | down [N] | version | force <v>  — lê DATABASE_URL direto
-│   │   ├── seed/           # popula demo data — lê DATABASE_URL direto (sem config.Load)
-│   │   └── import-catalog/ # importa catálogo via TCGDex API (api.tcgdex.net/v2); lê DATABASE_URL direto; flags --set, --series, --recent, --download-images; UPSERT idempotente; detecta Pocket via serie.id='tcgp'; seriesPTFallback cobre ~17 séries principais; buildPokemontcgLogoFallback busca logos de promo no pokemontcg.io como fallback
-│   ├── internal/
-│   │   ├── domain/
-│   │   │   ├── card/       # Series, Set (name_pt, series_pt, series_id), Card (collector_number, name_pt), Variant, Finish enum
-│   │   │   ├── pricing/    # Observation, DailyPoint, Condition, Source enums
-│   │   │   ├── store/      # Store (+DocumentType/Status), StockItem, StockMovement
-│   │   │   ├── user/       # User, PlatformRole, StoreRole, StoreRoleLevel()
-│   │   │   ├── listing/    # Listing (futuro marketplace)
-│   │   │   └── matching/   # ExternalCardRef
-│   │   ├── auth/
-│   │   │   ├── password.go   # HashPassword / CheckPassword (bcrypt cost 12)
-│   │   │   ├── token.go      # TokenService: IssueAccessToken, ParseAccessToken, GenerateRefreshToken
-│   │   │   ├── oauth.go      # OAuthService: AuthCodeURL, ValidateState, Exchange→GoogleProfile
-│   │   │   ├── service.go    # AuthService: Register, Login, GoogleCallback, ForgotPW, ResetPW, Refresh, Logout
-│   │   │   └── middleware.go # RequireAuth, RequirePlatformAdmin, RequireStoreRole, UserFromCtx
-│   │   ├── config/
-│   │   │   └── config.go   # Load() com fail-fast em JWT_SECRET; todos os demais opcionais
-│   │   ├── email/
-│   │   │   ├── email.go      # Provider interface + Message type
-│   │   │   ├── resend.go     # ResendProvider wrapping resend-go/v2
-│   │   │   ├── noop.go       # NoopProvider (loga no stdout)
-│   │   │   └── templates.go  # HTML inline: verificação, boas-vindas, reset de senha
-│   │   ├── handler/
-│   │   │   ├── auth.go       # POST register/login/google/verify-email/forgot-pw/reset-pw/refresh/logout; GET me
-│   │   │   ├── admin.go      # RequirePlatformAdmin: CRUD users, CRUD stores + doc validation, membros
-│   │   │   ├── store.go      # GET stock, POST purchase/sale (requer StoreRole)
-│   │   │   ├── card.go       # GET search, GET lookup
-│   │   │   ├── external.go   # GET external-search (RequirePlatformAdmin)
-│   │   │   └── helpers.go    # writeJSON, writeErr, decodeJSON, parseUUID, atoiOrDefault
-│   │   ├── repository/postgres/
-│   │   │   ├── db.go               # Connect, sentinelas ErrNotFound/ErrAlreadyExists
-│   │   │   ├── card_repo.go        # + UpsertSeries, ListSeries, UpsertCard, UpsertVariant, UpdateSetImageURL, UpdateSetSymbolURL, UpdateSeriesNamePT, UpdateSetNamePT, UpdateCardNamePT
-│   │   │   ├── price_history_repo.go
-│   │   │   ├── price_daily_repo.go
-│   │   │   ├── forex_repo.go
-│   │   │   ├── external_ref_repo.go
-│   │   │   ├── store_repo.go       # CRUD + List/Update/SetDocumentVerified
-│   │   │   ├── stock_repo.go       # RegisterPurchase/Sale/Adjustment com SELECT FOR UPDATE
-│   │   │   ├── user_repo.go        # Create/GetByID/GetByEmail/UpdateRole/MarkVerified/List
-│   │   │   ├── token_repo.go       # UseVerificationToken / UsePasswordResetToken (atômico UPDATE RETURNING)
-│   │   │   └── store_member_repo.go # GetMembership/AddMember/RemoveMember/ListMembers
-│   │   ├── service/
-│   │   │   ├── pricing/    # NormalizeBRL, FillObservation
-│   │   │   ├── pricesignal/ # For(variantID, condition), ByConditions(variantID, window)
-│   │   │   └── document/   # ValidateCNPJ, ValidateCPF (checksum), LookupCNPJ (ReceitaWS)
-│   │   ├── scraper/
-│   │   │   ├── scraper.go      # interface Source, Query, Result, ErrNotConfigured, MeasureSearch
-│   │   │   ├── ligapokemon/    # scraping HTML via goquery
-│   │   │   ├── pokewallet/     # tcgSource + cmSource compartilham Client+cache (1 req HTTP por carta)
-│   │   │   ├── ebay/           # Scrydex scraper (graded sales)
-│   │   │   ├── tcgplayer/      # legado — não registrado no main.go
-│   │   │   └── cardmarket/     # legado (FlareSolverr) — não registrado no main.go
-│   │   ├── tcgdex/         # client TCGDex API: Client (rate limit 1 req/s, retry 429/5xx), ListSets, GetSet, GetCard, EnrichSet, EnrichCard (bilíngue EN+PT-BR), models BilingualSet/BilingualCard/Variants
-│   │   ├── pokemontcgio/   # client pokemontcg.io: FindCard (preços), ListSets, ListCardsBySet, requestWithRetry — usado para busca de preços (external-search) e como fallback de logos de promo no import-catalog
-│   │   ├── upload/
-│   │   │   ├── upload.go   # Provider interface (Put/PublicURL/Exists) + LocalProvider + NewFromEnv
-│   │   │   └── s3.go       # S3Provider (aws-sdk-go-v2, ACL public-read, HeadObject para Exists)
-│   │   └── forex/          # BCBProvider (PTAX OData), Service com cache+fallback 7 dias
-│   └── migrations/
-│       ├── 000001 — extensions (pgcrypto, citext, pg_trgm)
-│       ├── 000002 — card_sets, cards, card_variants, ENUM variant_finish
-│       ├── 000003 — price_history (particionada), price_daily, ENUMs pricing, trigger updated_at
-│       ├── 000004 — forex_rates, listings, ENUM listing_status
-│       ├── 000005 — stores, stock_items, stock_movements, external_card_refs, ENUM stock_movement_kind
-│       ├── 000006 — users, user_oauth_providers, email_verification_tokens, password_reset_tokens,
-│       │            refresh_tokens, store_members; FKs listings.seller_id + stores.owner_id ativadas
-│       ├── 000007 — seed admin: gustavojucoski@gmail.com / ewq9brd5gan2dzf@FZD (bcrypt via pgcrypto)
-│       └── 000008 — stores + document_type/document_number/document_status/legal_name/verified_*
-└── frontend/
-    ├── package.json / next.config.ts / tailwind.config.ts
-    ├── proxy.ts                 # Next.js middleware: pass-through, sem proteção de rota
-    ├── app/
-    │   ├── layout.tsx           # LocaleProvider + AuthProvider wrapping global; lang="pt-BR"
-    │   ├── page.tsx             # Homepage pública — SiteHeader + hero + feature cards
-    │   ├── admin/
-    │   │   ├── layout.tsx       # Auth guard (redireciona não-admin) + SiteHeader
-    │   │   ├── page.tsx         # Busca Externa (SearchForm + resultados) — sem header próprio
-    │   │   └── lojas/
-    │   │       ├── page.tsx     # Listagem de lojas com badges de status
-    │   │       └── nova/
-    │   │           └── page.tsx # Formulário de cadastro CNPJ/CPF + lookup ReceitaWS
-    │   └── auth/
-    │       ├── login/page.tsx          # Email+senha; admin → /admin, user → /
-    │       ├── register/page.tsx       # Cadastro público (usuários comuns)
-    │       ├── verify-email/page.tsx   # Lê ?token=, POST /auth/verify-email
-    │       ├── callback/page.tsx       # Google OAuth callback: lê ?access_token=&refresh_token=
-    │       ├── forgot-password/page.tsx
-    │       └── reset-password/page.tsx # Lê ?token=
-    ├── app/
-    │   ├── sitemap.ts         # sitemap dinâmico: raiz + /sets + sets do pokemontcg
-    │   ├── sets/
-    │   │   ├── page.tsx       # hub de TCGs (cards por jogo)
-    │   │   └── [tcg]/
-    │   │       ├── page.tsx   # listagem de sets do TCG com SetFilter
-    │   │       └── [code]/
-    │   │           └── page.tsx # grade de cartas do set via fetchAllSetCards + CardGridFilter
-    │   └── cards/
-    │       └── [slug]/
-    │           └── page.tsx   # detalhe da carta: info, variantes, preços NM, JSON-LD
-    ├── components/
-    │   ├── AuthProvider.tsx   # contexto {user, loading, clearAuth, refresh}; hidrata token no mount
-    │   ├── LocaleProvider.tsx # contexto global de idioma; lê/escreve localStorage 'mtcg_lang'; default 'pt'
-    │   ├── LangToggle.tsx     # botão "PT · EN" no SiteHeader; usa useLang()
-    │   ├── LocalizedText.tsx  # helper: <LocalizedText en="..." pt="..." /> com fallback automático para EN
-    │   ├── SiteHeader.tsx     # Logo + nav inline + GlobalSearch + LangToggle + UserMenu; "Minha Loja" condicional por getMyStores()
-    │   ├── UserMenu.tsx       # Dropdown: unauthenticated → Entrar▾; authenticated → nome+avatar, Minha conta, Sair
-    │   ├── GlobalSearch.tsx   # autocomplete com debounce 300ms, teclado (↑↓ Enter Esc), ARIA combobox
-    │   ├── Breadcrumb.tsx     # nav breadcrumb genérico
-    │   ├── SetFilter.tsx      # grid de sets com filtro por série e busca por nome
-    │   ├── SetCard.tsx        # card de set (imagem, nome, data, total_cards)
-    │   ├── CardGridFilter.tsx # filtro client-side (nome/número normalizado, raridades dinâmicas), grid + lista
-    │   ├── CardThumbnail.tsx  # thumbnail de carta com link para /cards/{slug}
-    │   ├── VariantTabs.tsx    # tabs de variantes na página de detalhe
-    │   ├── SearchForm.tsx     # SetCombobox + número da carta (busca externa admin)
-    │   ├── SetCombobox.tsx    # combobox filtrável de sets (pokemontcg.io)
-    │   ├── CardInfo.tsx
-    │   ├── PriceMatrix.tsx    # tabela condição × fonte
-    │   ├── GradedSection.tsx  # vendas eBay gradeadas
-    │   ├── SourceCard.tsx     # accordion por fonte
-    │   └── ConditionBadge.tsx
-    └── lib/
-        ├── types.ts           # tipos espelhando respostas do backend (catálogo + auth + pricing); Set agora inclui symbol_url
-        ├── catalog.ts         # fetchSeries, fetchSets, fetchSet, fetchSetCards, fetchAllSetCards, fetchCard, autocompleteCards
-        ├── api.ts             # authedFetch (retry 401→refresh), searchCard()
-        ├── auth.ts            # login, register, logout, refreshAccessToken, fetchCurrentUser
-        ├── sets.ts            # useSets() — cache em memória
-        ├── locale.ts          # useLang() hook; t(en, pt) helper; LocaleContext type
-        └── stores-admin.ts    # listStores, createStore, lookupCNPJ, verifyDocument
+1. PM        → requisitos, escopo, critérios de aceite
+2. Arquiteto → design, ADRs, plano para os agentes
+3. Branch    → feat/ | fix/ | refactor/
+4. Código    → agentes implementam com commits incrementais
+5. Revisão técnica → Arquiteto revisa código gerado; se reprovado, engenheiro corrige
+               e Arquiteto revalida — ciclo repete até aprovação explícita
+6. QA        → qa-sdet-engineer revisa e propõe testes (Claude spawna automaticamente)
+7. PR        → Pull Request da branch para main
+8. Revisão   → Claude principal revisa
+9. Merge     → squash merge
+10. Docs     → atualizar CLAUDE.md (migrations, ADRs, fase, próximos passos)
 ```
 
-## 4. Decisões de Arquitetura (ADR-style enxuto)
+**Regras absolutas:**
+- Nenhum código sem PM → Arquiteto antes. Sem exceções.
+- Todo código em branch. Nunca commitar em `main`.
+- Arquiteto revisa TODO código gerado pelos engenheiros — obrigatório antes do QA.
+- QA obrigatório após aprovação do Arquiteto — Claude spawna sem precisar o usuário solicitar.
+- Docs obrigatórios após cada merge — Claude atualiza sem precisar o usuário solicitar.
+- Leitura/análise pode ser feita inline pelo Claude principal.
 
-### ADR-001 — SQL puro versionado em vez de Prisma/ORM
-**Decisão:** Migrations escritas à mão em SQL e aplicadas com `golang-migrate`.
-**Razão:** Precisamos de particionamento por range, índices BRIN, ENUMs nativos do Postgres e GIN com `pg_trgm`. Prisma e ORMs escondem ou complicam esses recursos. Auditabilidade de schema vale mais que ergonomia.
+## Status Atual
 
-### ADR-002 — `shopspring/decimal` para todo valor monetário
-**Decisão:** Nenhum `float32`/`float64` em campo de preço, em qualquer camada Go.
-**Razão:** Erros de arredondamento em `float` são inaceitáveis em marketplace. `decimal.Decimal` mapeia naturalmente para `NUMERIC(14,2)` no Postgres.
+**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via TCGDex (208 sets, TCG Pocket) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio (208 sets, 23.160 cartas EN + PT-BR para Pocket).
 
-### ADR-003 — Variantes como tabela própria (`card_variants`)
-**Decisão:** A formação de preço, listings e price_history apontam para `card_variants.id`, não para `cards.id`.
-**Razão:** A diferença Master Ball Mirror × Poke Ball Mirror × Holo × Reverse Holo é o cerne do produto. Uma carta com 4 variantes tem 4 séries históricas distintas; misturá-las destrói o sinal.
-
-### ADR-004 — Particionamento de `price_history` por trimestre
-**Decisão:** `price_history` é `PARTITION BY RANGE (observed_at)`, com partições trimestrais criadas previamente.
-**Razão:** Volume esperado em dezenas de milhões de linhas; trimestres permitem `DROP TABLE` rápido em retenção e index pruning automático em queries com filtro temporal.
-**Trade-off aceito:** PK precisa incluir `observed_at` (composta). UNIQUE de deduplicação também.
-
-### ADR-005 — Tabela quente `price_daily` separada do raw
-**Decisão:** Pré-agregamos diariamente min/avg/max/median/p25/p75 de vendas e listings em `price_daily`. Gráficos no front sempre leem dela.
-**Razão:** Calcular percentis em runtime sobre milhões de linhas mata latência. `price_daily` cabe inteira em cache.
-
-### ADR-006 — Auditoria cambial dupla
-**Decisão:** `price_history` armazena `price_original + currency` **e** `price_brl + fx_rate_used`. Convertemos uma única vez na ingestão e nunca recalculamos.
-**Razão:** Preserva auditabilidade ("vendeu por ¥4.500 quando o iene estava a R$ 0,034"). Recalcular a posteriori reescreveria o passado quando a cotação atual mudasse.
-
-### ADR-007 — BRIN em `observed_at`
-**Decisão:** Em vez de só BTree, usamos BRIN para varreduras por janela temporal.
-**Razão:** Em séries temporais inseridas em ordem aproximada, BRIN é ~1000× menor que BTree e suficiente para filtros de range. Mantemos BTree composto `(variant_id, observed_at DESC)` para o caso "última observação por variante".
-
-### ADR-008 — Multi-tenant desde a fundação
-**Decisão:** `stores` existe desde o primeiro dia, com `owner_id` em toda store e `store_id` em todo `stock_item`. Não há "loja default" hard-coded.
-**Razão:** Refatorar para multi-tenant depois exige reescrever todas as queries de leitura. O custo extra agora é uma coluna FK; o custo depois seria migrar dados em produção.
-
-### ADR-009 — Estoque agregado + log de movimentos
-**Decisão:** `stock_items` tem uma linha por (store, variant, condition, language, grade) com `quantity` cumulativa e `cost_avg_brl` (média ponderada). Toda alteração gera linha em `stock_movements` (append-only).
-**Razão:** Leitura quente ("quanto eu tenho?") consulta uma linha. Contabilidade ("qual minha margem?") ainda é exata via log. Custo médio ponderado é suficiente para o MVP; FIFO pode ser derivado do log se necessário.
-**Trade-off aceito:** Cartas gradeadas (PSA, Beckett) com cert numbers únicos não têm rastreio individual hoje.
-
-### ADR-010 — Matching strict via `external_card_refs`
-**Decisão:** Toda observação vinda de scraper só vira `price_history` se já existir uma linha em `external_card_refs` para `(source, external_id)`. Sem match → quarentena (staging futura).
-**Razão:** Misturar IDs ambíguos polui a série temporal e destrói o sinal. Preferimos perder amplitude (deixar de ingerir) a perder precisão (ingerir errado).
-**Trade-off aceito:** Bootstrap precisa de matching manual ou semi-automático para popular as primeiras refs.
-
-### ADR-011 — Estratégia por fonte: scraping vs API
-**Decisão:** **LigaPokemon** = scraping HTML via goquery. **TCGPlayer + Cardmarket** = pokewallet.io API (`internal/scraper/pokewallet/`). **eBay** = Scrydex (graded sales, sem credenciais). Scrapers legados `tcgplayer/` e `cardmarket/` mantidos no código mas não registrados no `main.go`.
-**Trade-off aceito:** eBay via Scrydex só tem dados gradeados (PSA/BGS/CGC/ACE/TAG). pokewallet.io free tier: 100 req/hora.
-
-### ADR-012 — TCGPlayer product ID (SUPERSEDIDO pelo ADR-015)
-Supersedida. O scraper `internal/scraper/tcgplayer/` ainda existe mas não é registrado.
-
-### ADR-013 — Preços TCGPlayer por condição via multiplicadores
-**Decisão:** Preço base NM → LP=80%, MP=64%, HP=40%, DMG=24%.
-**Trade-off aceito:** São estimativas, não preços reais de listagens por condição.
-
-### ADR-014 — Cardmarket: multiplicadores por condição
-**Decisão:** Preço base `low` NM → LP=70%, MP=45%, HP=25%, DMG=10%.
-
-### ADR-015 — pokewallet.io como fonte primária para TCGPlayer + Cardmarket
-**Decisão:** `New(apiKey, timeout)` devolve dois `scraper.Source` que compartilham um único `*Client` + `requestCache` (TTL 60s). Chamadas paralelas do fan-out geram apenas uma requisição HTTP por carta. `pickBestMatch`: 3 passes — set code+number exatos > set name+number > number only. Sem credencial → `ErrNotConfigured`.
-
-### ADR-016 — Auth próprio: JWT + Google OAuth + email/senha
-**Decisão:** Tabela `users` própria no Postgres. Access token JWT (HS256, 15 min, payload: sub/email/platform_role) em memória no frontend. Refresh token (SHA-256 hash armazenado em `refresh_tokens`) em `localStorage` (`mtcg_rt`). Google OAuth com state HMAC (10 min). bcrypt cost 12 para senhas. Email via Resend.
-**Razão:** Supabase Auth foi descartado — queremos controle total do schema (RBAC de loja, FK constraints, audit trail). JWT em memória + refresh em localStorage é o equilíbrio segurança/UX padrão para SPAs.
-**Trade-off aceito:** Refresh token em localStorage é vulnerável a XSS. Mitigação: access token curto (15 min), HTTPS em produção, CSP header.
-
-### ADR-017 — Criação de lojas: apenas platform_admin
-**Decisão:** Lojas são conveniadas — não há self-service. Toda criação passa por `POST /api/v1/admin/stores` (requer `RequirePlatformAdmin`). O admin informa `owner_id`, e o backend automaticamente adiciona o owner em `store_members` com `role=admin`.
-**Razão:** Controle de qualidade das lojas na plataforma; evita spam/fraude no cadastro.
-
-### ADR-018 — Validação de documento: CNPJ auto-verified, CPF manual
-**Decisão:** CNPJ → checksum Receita Federal + consulta ReceitaWS (free, 3 req/min). Se `situacao == "ATIVA"` → `document_status = auto_verified` com `legal_name` preenchido. Se rate limit/erro de rede → `pending`. CPF → checksum apenas → sempre `pending`. Revisão manual via `POST /admin/stores/{id}/verify-document`.
-**Documento armazenado:** apenas dígitos (`VARCHAR(14)`), sem máscara. Mascaramento é responsabilidade do frontend.
-**Razão:** ReceitaWS é gratuito e suficiente para o MVP. CPF de pessoa física não tem API pública de situação cadastral, então aprovação manual é obrigatória.
-**Gotcha pgx/v5:** ENUMs Postgres (`document_type`, `document_status`) precisam de cast explícito no SQL (`$n::document_type`) — pgx não faz cast automático de `string` para ENUM customizado.
-
-### ADR-020 — Registro em duas etapas: email-first
-**Decisão:** `POST /auth/register` aceita apenas `email`. O usuário recebe um link de verificação; ao clicar, a página `/auth/verify-email` exibe um formulário para definir nome e senha. `POST /auth/verify-email` recebe `{ token, password, display_name }`, completa o cadastro (`CompleteRegistration`: password_hash + display_name + email_verified_at em um único UPDATE) e devolve tokens de sessão (auto-login).
-**Razão:** Reduz abandono no cadastro (menor fricção na entrada) e garante que apenas emails válidos chegam à etapa de criação de senha.
-**Reenvio:** Se o mesmo email tentar se registrar novamente e a conta ainda não estiver verificada, o backend reenvia o link em vez de retornar 409. Conta já verificada → 409.
-**Dev:** O `verify_url` é sempre logado no stdout da API (`[dev] link de verificação`) para facilitar testes sem depender de entrega de email.
-**Email prod:** Requer domínio verificado no Resend. Sem domínio verificado, `onboarding@resend.dev` só entrega para o email do dono da conta Resend.
-
-### ADR-022 — Séries de sets como entidade própria (`card_series`)
-**Decisão:** Criar tabela `card_series` com `name` (EN), `name_pt` e `tcg`; `card_sets.series_id UUID FK` aponta para ela.
-**Razão:** `series` agrupa sets e tem identidade própria (nome bilíngue, pertence a um TCG). Desnormalizar como `series_pt TEXT` em `card_sets` criaria risco real de inconsistência em atualizações manuais set-a-set e quebraria agrupamentos no frontend.
-**Trade-offs aceitos:** Migration de dados necessária (INSERT das séries distintas + UPDATE dos sets). JOIN adicional nas queries de sets — desprezível com ~170 linhas. Coluna `card_sets.series TEXT` mantida para migração gradual; será removida na migration 000014 após confirmar integridade.
-**Alternativas rejeitadas:** `series_pt TEXT` em `card_sets` — inconsistência garantida em preenchimento manual; FK para `card_series.name` — instável se nome EN for corrigido na fonte.
-
-### ADR-021 — `tcg` como VARCHAR(32) com CHECK constraint em `card_sets`
-**Decisão:** A coluna `tcg` em `card_sets` é `VARCHAR(32) NOT NULL DEFAULT 'pokemon'` com CHECK constraint explícita (`'pokemon', 'pocket', 'magic', 'yugioh', 'onepiece', 'lorcana', 'fab'`) em vez de ENUM nativo do Postgres.
-**Razão:** O roadmap multi-TCG prevê adição orgânica de novos jogos. ENUM nativo exige `ALTER TYPE` com possível lock de tabela em tabela populada; `DROP/ADD CONSTRAINT` é mais simples. pgx/v5 não exige cast explícito para VARCHAR, eliminando o gotcha de ADR-018.
-**Trade-off aceito:** Sem validação no nível de tipo Go — usar constantes exportadas no domain para evitar typos.
-**Revisão:** Se o número de TCGs ultrapassar 10 e a CHECK constraint virar ruído, remover constraint e confiar na camada de aplicação, ou migrar para tabela de lookup `tcg_games`.
-
-### ADR-023 — upload.Provider: interface polimórfica Local + S3
-**Decisão:** `upload.Provider` define `Put(ctx, key, r, contentType)`, `PublicURL(key)` e `Exists(ctx, key)`. `LocalProvider` implementa para dev (armazena em disco, serve via `http.FileServer`). `S3Provider` implementa para prod (aws-sdk-go-v2, ACL `public-read`). `NewFromEnv()` seleciona o backend via `STORAGE_BACKEND=local|s3`.
-**Razão:** Permite que `import-catalog --download-images` e os handlers de upload de logo usem a mesma interface sem conhecer o backend de storage.
-**Chave de storage:** `{tcg}/cards/{setCode}/{localID}.webp` para cartas (TCGDex usa `localId` como base, extensão sempre `.webp`); `{tcg}/sets/{setID}_logo.png` e `{tcg}/sets/{setID}_symbol.png` para imagens de set; `logos/{uuid}.{ext}` para logos de loja.
-**Gotcha S3:** AWS desabilita ACLs em buckets novos por padrão (Block Public Access). Requer desabilitar `BlockPublicAcls` e `BlockPublicPolicy` no bucket antes de usar `public-read`.
-
-### ADR-024 — Slug de carta: `{setCode}-{collectorNumber}`
-**Decisão:** A URL de detalhe de carta usa o slug `{setCode}-{collectorNumber}` (ex: `sv1-1`, `base1-274`). O handler `GET /cards/{slug}` tenta UUID primeiro; se falhar, faz split no **primeiro** hífen para extrair setCode e collectorNumber. A query SQL aceita `"1"` == `"001"` via cast numérico com guard regex `~ '^\d+$'`. `collector_number` armazena apenas o número (`"274"`) — **nunca** `"274/217"`. O display `274/217` é composto no frontend via `collector_number + "/" + set.total_cards`.
-**Razão:** URLs legíveis e indexáveis; sem `/` no collector_number não há ambiguidade de path segment.
-**Trade-off:** Set codes nunca devem conter hífen. Se TCGs futuros tiverem set codes com hífen (ex: `op-01` de One Piece), o slug precisará de um separador diferente ou encoding.
-
-### ADR-025 — TCGDex como fonte primária de catálogo + suporte bilíngue PT-BR/EN
-**Decisão:** `cmd/import-catalog` migrado de pokemontcg.io para TCGDex (`api.tcgdex.net/v2`). `internal/tcgdex/` encapsula o client com rate limit 1 req/s e retry em 429/5xx. `EnrichSet`/`EnrichCard` buscam EN (autoritativo) e tentam PT-BR em paralelo — 404 PT-BR é silenciado (esperado para sets não-Pocket). No frontend, `LocaleProvider` + `useLang()` + `LangToggle` permitem toggle PT/EN persistido em `localStorage` (`mtcg_lang`, default `pt`). SEO/metadata sempre em EN para indexação consistente; headings visuais seguem preferência do usuário via `LocalizedText`.
-**Razão:** TCGDex cobre 208 sets (vs 172 do pokemontcg.io), inclui TCG Pocket nativamente, não exige API key e provê nomes PT-BR para cartas Pocket — recurso essencial para o público BR.
-**Trade-offs aceitos:** Cobertura PT-BR limitada a cartas de TCG Pocket (~1.100+ cartas); sets do Pokémon TCG principal permanecem só em EN até tradução manual. TCGDex não possui preços — `pokemontcgio.FindCard` permanece para busca de preços via `external-search`.
-**Variantes via TCGDex:** `Variants` struct (`Normal`, `Holo`, `Reverse`, `FirstEdition`, `WPromo`) mapeia para `card.Finish`. `WPromo` → `FinishNormal`. Fallback sem flags → `[FinishNormal, FinishReverseHolo]` (par padrão para sets principais).
-
-### ADR-019 — Navegação via hover dropdowns no SiteHeader
-**Decisão:** "Minha Loja" e "Admin" são botões com hover dropdown no `SiteHeader`. "Admin" expande para "Busca Externa" e "Lojas". "Minha Loja" expande para as abas da loja corrente (Perfil, Membros, Selados, Singles) quando o pathname está em `/lojas/{id}/*`, ou para "Ir para minha loja" caso contrário. O `UserMenu` serve apenas para ações do usuário (conta, logout).
-**Razão:** Dropdowns contextuais permitem navegar entre páginas da loja e retornar ao app global sem depender do botão voltar do browser.
-**Implementação:** `useState<string | null>` no SiteHeader para controlar qual dropdown está aberto; `onMouseEnter`/`onMouseLeave` nos wrappers. Pathname extraído via `usePathname()` para detectar `currentLojaId` com regex `/^\/lojas\/([^/]+)/`.
-**Layout admin:** `app/admin/layout.tsx` é o guard — redireciona não-admins para `/auth/login`. As páginas filhas não têm guard próprio nem header duplicado.
-**Layout loja:** `app/lojas/[id]/layout.tsx` exibe barra com logo, nome, role e abas de navegação. Contém seta "←" que leva ao Início.
-
-## 5. Status Atual
-
-**Fase:** Auth completo + gestão de lojas + catálogo multi-TCG com importação via **TCGDex** (208 sets, TCG Pocket) + suporte bilíngue PT-BR/EN + **catálogo público navegável** (hub de TCGs, listagem de sets, grid de cartas com filtro client-side, página de detalhe com variantes e preços, autocomplete bilíngue, sitemap, toggle PT/EN) + **imagens em S3 próprio** (208 sets, 23.160 cartas EN + PT-BR para sets Pocket).
-
-### Migrations (000001–000017)
+### Migrations
 
 | # | Conteúdo |
 |---|---|
 | 000001 | Extensions: `pgcrypto`, `citext`, `pg_trgm` |
 | 000002 | `card_sets`, `cards`, `card_variants`, ENUM `variant_finish` |
-| 000003 | `price_history` (particionada por trimestre), `price_daily`, ENUMs de pricing, trigger `updated_at` |
+| 000003 | `price_history` (particionada por trimestre), `price_daily`, ENUMs pricing, trigger `updated_at` |
 | 000004 | `forex_rates`, `listings`, ENUM `listing_status` |
 | 000005 | `stores`, `stock_items`, `stock_movements`, `external_card_refs`, ENUM `stock_movement_kind` |
-| 000006 | `users`, `user_oauth_providers`, `email_verification_tokens`, `password_reset_tokens`, `refresh_tokens`, `store_members`; FKs `listings.seller_id` e `stores.owner_id` ativadas |
-| 000007 | Seed admin: `gustavojucoski@gmail.com` / `ewq9brd5gan2dzf@FZD`, `platform_admin`, email verificado |
-| 000008 | `stores` + colunas `document_type`, `document_number`, `document_status`, `legal_name`, `document_verified_at`, `document_verified_by`; índice unique parcial |
-| 000009 | `stores` + colunas de endereço (address_zip … address_country) separadas em migration dedicada |
-| 000010 | `store_audit_log` — id, store_id, changed_by, change_type, changes (JSONB), created_at; índice em (store_id, created_at DESC) |
-| 000012 | `card_sets` + coluna `tcg VARCHAR(32) NOT NULL DEFAULT 'pokemon'` + CHECK constraint + índice (ADR-021) |
-| 000013 | `card_series` (séries como entidade própria: `name`, `name_pt`, `tcg`; UNIQUE `name+tcg`); FK `series_id` em `card_sets` com backfill automático; `name_pt TEXT` em `card_sets`; `collector_number TEXT NOT NULL DEFAULT ''` e `name_pt TEXT` em `cards`; índices hash em `collector_number` e btree em `series_id` (ADR-022) |
-| 000014 | `cards` — `SPLIT_PART(collector_number, '/', 1)` limpa dados existentes no formato `"274/217"` → `"274"`; dados inseridos por importações futuras já chegam limpos |
-| 000015 | `card_sets` + coluna `printed_total INTEGER` — total impresso no card (ex: 217 em Ascended Heroes), distinto de `total_cards` (295) que inclui secret rares; usado no autocomplete para filtrar "110/217" ao set correto; pokemontcg.io não fornece este campo para sets japoneses antigos — atualizar manualmente via SQL quando necessário |
-| 000016 | `card_sets` + coluna `symbol_url TEXT`; `tcg='pocket'` adicionado ao CHECK constraint de `card_sets`; índices GIN em `cards.name_pt` e `card_series.name_pt` para autocomplete bilíngue (ADR-025) |
-| 000017 | `cards` + coluna `image_url_pt TEXT` — URL da imagem PT-BR da carta (quando disponível via TCGDex); populada pelo `import-catalog --download-images` para sets TCG Pocket; chave S3: `{tcg}/cards/{setCode}/{localID}_pt.webp` |
+| 000006 | `users`, oauth providers, email/password tokens, `refresh_tokens`, `store_members` |
+| 000007 | Seed admin: `gustavojucoski@gmail.com` / `ewq9brd5gan2dzf@FZD` |
+| 000008 | `stores` + `document_type/number/status`, `legal_name`, `verified_*` |
+| 000009 | `stores` + colunas de endereço |
+| 000010 | `store_audit_log` (JSONB) |
+| 000012 | `card_sets.tcg VARCHAR(32)` + CHECK constraint (ADR-021) |
+| 000013 | `card_series` (entidade própria); `series_id FK` em `card_sets`; `collector_number` e `name_pt` em `cards` (ADR-022) |
+| 000014 | Limpa `collector_number` — remove `"/217"` → mantém só o número |
+| 000015 | `card_sets.printed_total INTEGER` — para autocomplete de formato `"110/217"` |
+| 000016 | `card_sets.symbol_url`; `tcg='pocket'` no CHECK; índices GIN para autocomplete bilíngue |
+| 000017 | `cards.image_url_pt` — imagem PT-BR (TCG Pocket via TCGDex) |
 
-### Endpoints HTTP disponíveis
+## Próximos Passos
 
-```
-GET  /healthz
+1. **Remover remotePatterns de transição** — `assets.tcgdex.net` e `images.pokemontcg.io` em `next.config.ts` após confirmar que tudo aponta para o S3 próprio.
+2. **Job de agregação diária** — `cmd/aggregate` chama `PriceDailyRepo.RebuildDay(today)`. Sem isso: "Sem preço" em todas as cartas.
+3. **Matching service** — `internal/service/matching`: observação raw → variant_id → cria `external_card_ref`.
+4. **Pipeline scraping → price_history** — ligar scrapers ao storage. Hoje `external-search` não persiste.
+5. **Frontend estoque de singles** — `/lojas/[id]/singles` com seleção de cartas via API de catálogo.
+6. **Frontend estoque de selados** — `/lojas/[id]/selados`.
+7. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries.
+8. **Marketplace público** — listings + pagamentos (ver `docs/gaps.md`).
 
-# Auth (público)
-POST /api/v1/auth/register          # body: { email } — envia link de verificação; se email já existe e não verificado, reenvia
-POST /api/v1/auth/login
-GET  /api/v1/auth/google
-GET  /api/v1/auth/google/callback
-POST /api/v1/auth/verify-email      # body: { token, password, display_name } — completa cadastro + retorna tokens (auto-login)
-POST /api/v1/auth/forgot-password
-POST /api/v1/auth/reset-password
-POST /api/v1/auth/refresh
-POST /api/v1/auth/logout
-GET  /api/v1/auth/me               (RequireAuth)
+## Convenções Críticas
 
-# Catálogo (público — sem autenticação)
-GET  /api/v1/series?tcg=pokemon                 # lista séries
-GET  /api/v1/sets/{tcg}?series_id=&page=&limit= # lista sets paginados (limit máx 500)
-GET  /api/v1/sets/{tcg}/{code}                  # detalhe do set
-GET  /api/v1/sets/{tcg}/{code}/cards?page=&limit= # cartas do set (limit máx 200)
-GET  /api/v1/cards/autocomplete?q=&tcg=&limit=  # sugestões de busca (trgm)
-GET  /api/v1/cards/{slug}                       # detalhe da carta; slug = UUID | {setCode}-{collectorNumber}
-GET  /api/v1/cards/search
-GET  /api/v1/cards/lookup
+**Go:**
+- `shopspring/decimal` em todo valor monetário — nunca float.
+- Erros embrulhados com `fmt.Errorf("...: %w", err)`. Sentinelas exportados.
+- `pgx/v5 + ENUMs Postgres`: cast explícito obrigatório no SQL (`$n::nome_do_enum`).
+- `CITEXT + pg_trgm`: cast `::text` obrigatório antes de `%` ou `similarity()`.
+- `cmd/migrate`, `cmd/seed`, `cmd/import-catalog`: leem `DATABASE_URL` direto — **não usam `config.Load()`**.
 
-# Busca externa (RequirePlatformAdmin)
-GET  /api/v1/external-search?number=&set=
+**Schema:**
+- Nunca editar migration já aplicada. Toda alteração de ENUM = nova migration.
+- `collector_number` armazena só o número (`"274"`), nunca `"274/217"`. Display composto no frontend.
+- Slug de carta: `{setCode}-{collectorNumber}`. Set codes **nunca** devem conter hífen.
 
-# Admin — catálogo PT-BR (RequirePlatformAdmin)
-GET    /api/v1/admin/series                       # lista séries (opcional ?tcg=pokemon)
-PATCH  /api/v1/admin/series/{id}/name-pt          # tradução PT-BR da série
-PATCH  /api/v1/admin/sets/{id}/name-pt            # tradução PT-BR do set
-PATCH  /api/v1/admin/cards/{id}/name-pt           # tradução PT-BR da carta
+**Frontend:**
+- App Router. Server component por padrão; `"use client"` só com estado/eventos/hooks.
+- Guard de auth centralizado em `app/admin/layout.tsx` — páginas filhas não duplicam.
+- Bilíngue: `<LocalizedText en={...} pt={...} />` ou `t(en, pt)` de `lib/locale.ts`. SEO sempre em EN.
+- `NEXT_PUBLIC_API_URL` via `.env.local`.
 
-# Admin — usuários (RequirePlatformAdmin)
-GET    /api/v1/admin/users
-GET    /api/v1/admin/users/search?q=
-POST   /api/v1/admin/users
-PATCH  /api/v1/admin/users/{id}/role
-DELETE /api/v1/admin/users/{id}
-
-# Admin — lojas (RequirePlatformAdmin)
-GET    /api/v1/admin/stores                      # lista paginada
-POST   /api/v1/admin/stores                      # cria loja + valida CNPJ/CPF
-GET    /api/v1/admin/stores/cnpj-lookup?cnpj=    # proxy ReceitaWS (rota literal ANTES de {id})
-GET    /api/v1/admin/stores/{id}
-PATCH  /api/v1/admin/stores/{id}                 # aceita owner_id para trocar proprietário
-POST   /api/v1/admin/stores/{id}/verify-document # aprovação manual de documento
-POST   /api/v1/admin/stores/{id}/logo
-GET    /api/v1/admin/stores/{id}/audit-log
-POST   /api/v1/admin/stores/{id}/members
-PATCH  /api/v1/admin/stores/{id}/members/{userId}/role
-DELETE /api/v1/admin/stores/{id}/members/{userId}
-GET    /api/v1/admin/stores/{id}/members
-
-# Lojas — acesso do próprio membro (RequireAuth / RequireStoreRole)
-GET    /api/v1/stores/{id}                              # público
-GET    /api/v1/stores/me                                # lojas do usuário autenticado
-GET    /api/v1/stores/{id}/my-role                      # role do caller nesta loja
-GET    /api/v1/stores/{id}/members                      # (viewer+)
-POST   /api/v1/stores/{id}/members                      # (admin)
-PATCH  /api/v1/stores/{id}/members/{userId}/role        # (admin)
-DELETE /api/v1/stores/{id}/members/{userId}             # (admin)
-PATCH  /api/v1/stores/{id}/profile                      # edição restrita: nome, endereço (admin)
-POST   /api/v1/stores/{id}/logo                         # (admin)
-GET    /api/v1/stores/{id}/stock
-POST   /api/v1/stores/{id}/stock/purchase               # (stock_manager+)
-POST   /api/v1/stores/{id}/stock-items/{itemID}/sale    # (stock_manager+)
-
-# Variantes
-GET  /api/v1/variants/{id}/signal
-```
-
-### Dados de demonstração (cmd/seed)
-
-`cmd/seed` é um stub — não popula dados. O admin é criado pela migration 000007. O catálogo é importado via `cmd/import-catalog`.
-
-### Frontend (rotas)
-
-| Rota | Acesso | Conteúdo |
-|---|---|---|
-| `/` | público | Homepage com hero, feature cards, SiteHeader |
-| `/auth/login` | público | Email+senha; admin→/admin, user→/ |
-| `/auth/register` | público | Cadastro email-only (step 1) |
-| `/auth/verify-email?token=` | público | Define nome + senha após confirmar email (step 2, auto-login) |
-| `/auth/callback?access_token=&refresh_token=` | público | Google OAuth redirect |
-| `/auth/forgot-password` | público | Solicita reset |
-| `/auth/reset-password?token=` | público | Nova senha |
-| `/admin` | platform_admin | Busca Externa com SearchForm |
-| `/admin/lojas` | platform_admin | Lista de lojas com status de documento |
-| `/admin/lojas/nova` | platform_admin | Formulário de cadastro CNPJ/CPF |
-| `/admin/lojas/[id]` | platform_admin | Edição completa da loja + log de auditoria |
-| `/lojas/me` | autenticado | Redireciona para a loja do usuário |
-| `/lojas/[id]/perfil` | membro da loja | Edição restrita (nome, logo, endereço) |
-| `/lojas/[id]/membros` | membro da loja | Gestão de membros (admin: adicionar/remover/alterar role) |
-| `/lojas/[id]/selados` | membro da loja | Placeholder — estoque de selados |
-| `/lojas/[id]/singles` | membro da loja | Placeholder — estoque de singles (multi-TCG futuro) |
-| `/sets` | público | Hub de TCGs disponíveis |
-| `/sets/[tcg]` | público | Listagem de sets do TCG com filtro por série e busca |
-| `/sets/[tcg]/[code]` | público | Grade de cartas do set — filtro por nome/número/raridade (client-side, sem paginação) |
-| `/cards/[slug]` | público | Detalhe da carta: variantes, preços NM, JSON-LD, breadcrumb |
-
-## 6. Próximos Passos (priorizados)
-
-1. **Remover remotePatterns de transição** — `assets.tcgdex.net` e `images.pokemontcg.io` em `frontend/next.config.ts` foram adicionados como transição. Remover após confirmar que todas as imagens servidas pelo frontend apontam para o S3 próprio (`*.s3.sa-east-1.amazonaws.com`).
-2. **Preencher traduções PT-BR de sets** — séries já têm name_pt via `seriesPTFallback` no import. Sets individuais ainda sem PT (exceto Pocket). Usar `PATCH /api/v1/admin/sets/{id}/name-pt` para os sets mais acessados.
-2. **Job de agregação diária** — `cmd/aggregate` (ou cron) chama `PriceDailyRepo.RebuildDay(today)`. Sem isso as páginas de detalhe de carta mostram "Sem preço" para todas as variantes.
-3. **Matching service** — `internal/service/matching`: dada uma observação raw (title, set, number) tenta achar variant_id e cria automaticamente o `external_card_ref`.
-4. **Pipeline scraping → price_history** — ligar os scrapers ao storage. Hoje `external-search` só devolve ao caller, não persiste nada.
-5. **Frontend estoque de singles** — `/lojas/[id]/singles` com cadastro de cards. Usar `GET /api/v1/sets/{tcg}` + `GET /api/v1/sets/{tcg}/{code}/cards` para seleção; exibir `name_pt` e `series_pt` quando disponíveis, fallback para inglês.
-6. **Frontend estoque de selados** — `/lojas/[id]/selados` com cadastro de produtos selados (booster box, ETB, etc.).
-7. **Testes integrados** — `tests/integration` com `testcontainers-go` para repos críticos: `StockRepo` (transações, custo médio ponderado), `PriceDailyRepo.RebuildDay`, `ListCardsBySetCode` (ordenação numérica), `GetCardBySetAndNumber` (normalização "001"=="1").
-8. **Marketplace público** — listings, reservas e checkout. Entra integração de pagamentos (seção 9).
-
-## 7. Convenções
-
-- **Agentes**: toda tarefa que escreve ou modifica código deve ser delegada ao agente especializado (ver Seção 0). Claude principal coordena e revisa; agentes executam.
-- **Go**: pacotes em `lowercase`, exportados em `CamelCase`. Sem stutter (`card.Card`). Erros sempre embrulhados com `fmt.Errorf("...: %w", err)`. Sentinelas exportados (`ErrNotFound`, `ErrAlreadyExists`, `ErrInsufficientStock`).
-- **SQL**: snake_case. ENUMs no plural natural. Toda alteração de ENUM = nova migration. Nunca editar migration já aplicada.
-- **pgx/v5 + ENUMs customizados**: sempre usar cast explícito no SQL (`$n::nome_do_enum`). pgx não faz auto-cast de `string` para ENUM Postgres.
-- **CITEXT + pg_trgm**: o operador `%` e a função `similarity()` do `pg_trgm` são registrados apenas para `text`. Colunas `CITEXT` (ex: `cards.name`) precisam de cast explícito `::text` antes de usar esses operadores — sem o cast a query falha silenciosamente e retorna vazio.
-- **Frontend**: App Router. Server component por padrão; `"use client"` só quando há estado/eventos/hooks. Auth guard centralizado em `app/admin/layout.tsx` — páginas filhas não duplicam o guard. `NEXT_PUBLIC_API_URL` via `.env.local`.
-- **Docker**: `cmd/migrate`, `cmd/seed` e `cmd/import-catalog` leem `DATABASE_URL` diretamente — **não usam `config.Load()`** (que exigiria JWT_SECRET e outras vars de auth desnecessárias nesses binários).
-- **Multi-TCG**: o sistema deve suportar qualquer TCG (não só Pokémon). Ao implementar qualquer feature de catálogo de cartas ou estoque de singles, modelar de forma agnóstica ao TCG (campo `tcg` ou similar). Não assumir Pokémon como padrão hard-coded.
-- **Slugs de carta**: formato `{setCode}-{collectorNumber}`. Set codes nunca devem conter hífen. Handler faz split no **primeiro** hífen; query SQL usa normalização numérica `~ '^\d+$'` para `"001"` == `"1"`.
-- **Upload**: usar sempre `upload.Provider` interface. `NewFromEnv()` seleciona local vs S3. Não instanciar `LocalProvider` ou `S3Provider` diretamente fora de `NewFromEnv`.
-- **Catálogo público**: endpoints `/series`, `/sets/*`, `/cards/*` são públicos (sem auth). `Cache-Control: public` nos responses. No frontend, `fetchAllSetCards` carrega tudo em paralelo — não usar paginação SSR em página de set.
-- **Autocomplete (`/cards/autocomplete`)**: busca por prefixo em `name`, `name_pt` e `collector_number`. Para `collector_number`, usa `SPLIT_PART($1, '/', 1)` para tolerar o formato `"110/217"` — extrai o número antes da barra para o ILIKE e, quando há denominador (ex: `/217`), filtra sets onde `COALESCE(printed_total, total_cards)::text LIKE '217%'`. Sets japoneses antigos precisam de atualização manual de `printed_total` (`UPDATE card_sets SET printed_total = N WHERE code = 'xxx'`).
-- **Bilíngue (PT-BR/EN)**: usar sempre `<LocalizedText en={...} pt={...} />` ou `t(en, pt)` de `lib/locale.ts` nos componentes de catálogo. SEO (títulos de página, meta description, JSON-LD) sempre em EN. `lang="pt-BR"` no `<html>`. Preferência em `localStorage['mtcg_lang']`, default `pt`.
-- **TCGDex image URLs**: base URL sem extensão (ex: `https://assets.tcgdex.net/...`). Append `/high.webp` para imagem de carta full-size. Logos de set: `{logoURL}.png`. Symbols: `{symbolURL}.png`. Imagens baixadas via `--download-images` ficam em `{tcg}/cards/{setCode}/{localID}.webp` (EN) e `{tcg}/cards/{setCode}/{localID}_pt.webp` (PT-BR, somente sets Pocket).
-- **S3 bucket**: `mercadotcg-images-549803608550-sa-east-1-an`, região `sa-east-1`. Bucket policy com `s3:GetObject` para `Principal: "*"`. IAM user `MercadoTCG` com `s3:PutObject`, `s3:GetObject`, `s3:HeadObject`, `s3:DeleteObject` no resource `arn:aws:s3:::mercadotcg-images-549803608550-sa-east-1-an/*`. S3Provider NÃO usa ACL por objeto (bucket novo tem ACLs desabilitadas — usar bucket policy). `S3Provider.Put` bufferiza o body via `io.ReadAll` para fornecer `Content-Length` obrigatório.
-- **next.config.ts remotePatterns**: ao adicionar nova fonte de imagens externas, adicionar o domínio em `next.config.ts`. Imagens internas usam `<img>` com `eslint-disable` enquanto URLs externas não forem migradas para next/image.
-
-## 8. O que NÃO está pronto
-
-- Não há job criando partições futuras de `price_history`. Hardcoded até 2026-Q4.
-- `PriceHistoryRepo.InsertBatch` (CopyFrom) não respeita ON CONFLICT — deduplicação é responsabilidade do pipeline a montante.
-- `ListingRepo` não existe — virá com o marketplace.
-- `forex.BCBProvider` usa `decimal.NewFromFloat` no parsing — ok para BCB (4 casas), mas trocar para `decimal.NewFromString` se mudar de fonte.
-- Cartas gradeadas: `stock_items` agrega por `grade` mas não distingue dois "PSA 10" com cert numbers diferentes (ver ADR-009).
-- Reservas de estoque (`reservation`/`release`): ENUMs declarados em `stock_movement_kind` mas código não os emite ainda.
-- Pipeline de scraping → matching → `price_history` não existe. Scraper retorna ao caller mas não persiste.
-- Emails de transação funcionam apenas com `RESEND_API_KEY` configurada; sem a chave usa `NoopProvider` (loga no stdout, não envia). O `verify_url` é sempre logado no stdout mesmo quando Resend está ativo — útil em dev. Em produção, exige domínio verificado no Resend (`EMAIL_FROM_ADDRESS` deve usar esse domínio); `onboarding@resend.dev` só entrega para o email do dono da conta.
-- Google OAuth requer `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL` e `OAUTH_STATE_HMAC_KEY` configurados.
-
-## 9. Integração de Pagamentos (planejada)
-
-### 9.1 Escolha do PSP
-
-- **Mercado Pago** default — PIX, cartão, boleto, dominante no BR.
-- **Stripe** momento 2 — compradores internacionais.
-- Não usar múltiplos PSPs simultâneos no MVP.
-
-### 9.2 Modelo de dados (a criar)
-
-- `payment_intents` — id, listing_id, buyer_id, amount_brl, psp, psp_payment_id, status, idempotency_key.
-- `payment_events` — log append-only de webhooks (payload JSONB).
-- `payouts` — seller_id, amount_brl, fee_brl, psp_transfer_id, status, paid_at.
-
-### 9.3 Regras críticas
-
-- Idempotência em webhooks (PSP pode reenviar).
-- Escrow lógico: liberar payout só após confirmação de recebimento.
-- `decimal.Decimal` em todo valor monetário — nunca float.
-- Fees registradas separadas do bruto.
-- Validar HMAC do PSP antes de qualquer mutação.
-
-### 9.4 Código
-
-- `internal/payment/` — interface `Provider`, implementações `mercadopago.go` e `stripe.go`.
-- `internal/handler/payment_webhook.go` — `POST /webhooks/payments/{psp}`.
+**Upload:**
+- Sempre via `upload.Provider` interface. `NewFromEnv()` seleciona local vs S3.
+- S3 usa bucket policy (não ACL por objeto). `Put` bufferiza body via `io.ReadAll`.
+- Ao adicionar fonte de imagens externas, adicionar domínio em `next.config.ts`.

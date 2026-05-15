@@ -1,39 +1,45 @@
-// Command import-catalog populates card_sets + cards from the TCGDex API
-// (https://api.tcgdex.net/v2), which is free, requires no API key, and covers
-// both the main Pokémon TCG and TCG Pocket.
+// Command import-catalog populates card_sets, cards, and card_variants from the
+// Scrydex API (https://api.scrydex.io), which provides rich marketplace variant
+// data (TCGPlayer, Cardmarket) alongside the standard catalog metadata.
 //
 // Usage:
 //
-//	import-catalog                    # imports all sets + cards
-//	import-catalog --set sv01         # imports a single specific set
-//	import-catalog --series sv        # imports all sets in a series
-//	import-catalog --recent 5         # imports only the 5 most recently released sets
-//	import-catalog --download-images  # downloads card/set images to the storage provider
+//	import-catalog                         # imports all expansions + cards
+//	import-catalog --set sv8               # imports a single specific expansion
+//	import-catalog --series "Scarlet & Violet"  # imports all sets of a series
+//	import-catalog --lang ja               # imports only Japanese expansions
+//	import-catalog --skip-images           # imports metadata only, no S3 uploads
+//	import-catalog --dry-run               # logs what would happen without persisting
+//	import-catalog --enrich-pt             # fills name_pt + image_url_pt via TCGDex
+//	import-catalog --set sv8 --enrich-pt   # import then enrich in one run
 //
-// Idempotent: existing sets and cards are updated (UPSERT), not duplicated.
+// Idempotent: existing rows are updated via UPSERT; sets with import_source =
+// 'manual' are never overwritten by this importer.
 //
 // Environment variables:
 //
-//	DATABASE_URL           (required)
-//	POKEMON_TCG_API_KEY    optional — raises pokemontcg.io rate limit from 1k to 20k req/day
-//	STORAGE_BACKEND        "local" (default) | "s3"
-//	STORAGE_LOCAL_PATH     local directory (default: ./data/images)
-//	STORAGE_LOCAL_BASE_URL public base URL; required with STORAGE_BACKEND=local
-//	S3_BUCKET              bucket name; required with STORAGE_BACKEND=s3
-//	S3_REGION              AWS region (default: us-east-1)
-//	STORAGE_S3_CUSTOM_URL  optional CloudFront/custom URL for S3
+//	DATABASE_URL            (required)
+//	SCRYDEX_API_KEY         (required)
+//	SCRYDEX_TEAM            (required)
+//	SCRYDEX_BASE_URL        optional, defaults to https://api.scrydex.io
+//	SCRYDEX_RATE_LIMIT      optional float, defaults to 2.0 req/s
+//	STORAGE_BACKEND         "local" (default) | "s3"
+//	STORAGE_LOCAL_PATH      local directory (default: ./data/images)
+//	STORAGE_LOCAL_BASE_URL  public base URL; required with STORAGE_BACKEND=local
+//	S3_BUCKET               bucket name; required with STORAGE_BACKEND=s3
+//	S3_REGION               AWS region (default: us-east-1)
+//	STORAGE_S3_CUSTOM_URL   optional CloudFront/custom URL for S3
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,442 +49,545 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/gustavojucoski/mercadotcg/backend/internal/catalog/scrydex"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/domain/card"
-	"github.com/gustavojucoski/mercadotcg/backend/internal/pokemontcgio"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/repository/postgres"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/tcgdex"
 	"github.com/gustavojucoski/mercadotcg/backend/internal/upload"
 )
 
-// seriesPTFallback maps TCGDex serie IDs to their Portuguese names.
-// TCGDex only provides PT-BR translations for TCG Pocket series; this map
-// covers the main Pokémon TCG series so the toggle PT/EN works for them too.
-var seriesPTFallback = map[string]string{
-	"sv":      "Escarlate e Violeta",
-	"swsh":    "Espada e Escudo",
-	"sm":      "Sol e Lua",
-	"xy":      "XY",
-	"bw":      "Preto e Branco",
-	"hgss":    "HeartGold e SoulSilver",
-	"dp":      "Diamante e Pérola",
-	"ex":      "EX",
-	"rs":      "Ruby & Sapphire",
-	"base":    "Base",
-	"gym":     "Ginásio",
-	"neo":     "Neo",
-	"e-card":  "Série-e",
-	"pop":     "POP Series",
-	"legend":  "LEGEND",
-	"online":  "Online",
-	"promo":   "Promo",
+// imgJob describes a card image download to be processed by the worker pool.
+type imgJob struct {
+	cardID    uuid.UUID
+	setCode   string
+	scrydexID string // Scrydex card ID (e.g. "sv8-199") used as filename base
+	imageURL  string // full URL for the large image
 }
 
-// imgJob describes a card image to download in the background worker pool.
-type imgJob struct {
-	cardID     uuid.UUID
-	setCode    string
-	localID    string // TCGDex localId, used as the filename base
-	imageURL   string // base URL (no extension); append "/high.webp" for the image
-	imageURLPT string // PT-BR image base URL; empty when unavailable
-	tcg        string
+// counters tracks import progress for the final summary log.
+type counters struct {
+	mu             sync.Mutex
+	setsImported   int
+	setsUpdated    int
+	setsSkipped    int
+	cardsImported  int
+	cardsUpdated   int
+	variantsUpsert int
+	imagesDownload int
+	errors         int
+}
+
+func (c *counters) incSet(isNew bool) {
+	c.mu.Lock()
+	if isNew {
+		c.setsImported++
+	} else {
+		c.setsUpdated++
+	}
+	c.mu.Unlock()
+}
+
+func (c *counters) incCard(isNew bool) {
+	c.mu.Lock()
+	if isNew {
+		c.cardsImported++
+	} else {
+		c.cardsUpdated++
+	}
+	c.mu.Unlock()
 }
 
 func main() {
-	setCode := flag.String("set", "", "import a specific set by ID (e.g. sv01)")
-	seriesFilter := flag.String("series", "", "import all sets whose ID starts with this prefix (e.g. sv)")
-	recent := flag.Int("recent", 0, "if > 0, import only the N sets with the highest IDs (heuristic for recent)")
-	downloadImages := flag.Bool("download-images", false, "download card and set images to the storage provider")
+	setFilter := flag.String("set", "", "import only the expansion with this ID (e.g. sv8)")
+	seriesFilter := flag.String("series", "", "import only expansions whose series name matches this string")
+	langFilter := flag.String("lang", "all", "filter by language: en, ja, ko, or all (default)")
+	skipImages := flag.Bool("skip-images", false, "skip all image downloads; only upsert metadata")
+	dryRun := flag.Bool("dry-run", false, "log what would happen without writing to the DB or S3")
+	enrichPT := flag.Bool("enrich-pt", false, "fill name_pt and image_url_pt for scrydex cards via TCGDex")
+	enrichLimit := flag.Int("enrich-limit", 500, "max cards to enrich per run (avoid hammering TCGDex)")
 	flag.Parse()
 
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
 
+	if *langFilter != "all" && *langFilter != "en" && *langFilter != "ja" && *langFilter != "ko" {
+		log.Fatal().Str("lang", *langFilter).Msg("invalid --lang value; use: en, ja, ko, all")
+	}
+
 	_ = godotenv.Load()
+
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal().Msg("DATABASE_URL is required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Minute)
+	// 120 min for import; enrichment at 1 req/s can take longer for large batches.
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Minute)
 	defer cancel()
 
-	pool, err := postgres.Connect(ctx, databaseURL)
-	if err != nil {
-		log.Fatal().Err(err).Msg("connect postgres")
-	}
-	defer pool.Close()
+	// runScrydex is true when the caller wants to import from Scrydex (either a
+	// specific set/series was requested, or --enrich-pt was NOT the sole flag).
+	// Passing --enrich-pt alone skips the full Scrydex import.
+	runScrydex := *setFilter != "" || *seriesFilter != "" || !*enrichPT
 
-	repo := postgres.NewCardRepo(pool)
-	client := tcgdex.New(30 * time.Second)
-
-	var uploadProvider upload.Provider
-	if *downloadImages {
-		uploadProvider, err = upload.NewFromEnv()
+	var scrydexClient *scrydex.Client
+	if runScrydex {
+		var err error
+		scrydexClient, err = scrydex.NewFromEnv()
 		if err != nil {
-			log.Fatal().Err(err).Msg("create storage provider")
+			log.Fatal().Err(err).Msg("create scrydex client")
+		}
+		defer scrydexClient.Close()
+	}
+
+	var (
+		repo     *postgres.CardRepo
+		provider upload.Provider
+	)
+
+	if !*dryRun {
+		pool, err := postgres.Connect(ctx, databaseURL)
+		if err != nil {
+			log.Fatal().Err(err).Msg("connect postgres")
+		}
+		defer pool.Close()
+		repo = postgres.NewCardRepo(pool)
+
+		if !*skipImages {
+			provider, err = upload.NewFromEnv()
+			if err != nil {
+				log.Fatal().Err(err).Msg("create storage provider")
+			}
 		}
 	}
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	log.Info().
+		Str("set", *setFilter).
+		Str("series", *seriesFilter).
+		Str("lang", *langFilter).
+		Bool("dry_run", *dryRun).
+		Bool("skip_images", *skipImages).
+		Bool("enrich_pt", *enrichPT).
+		Int("enrich_limit", *enrichLimit).
+		Msg("==> Starting import-catalog")
 
-	// Build a fallback logo map from pokemontcg.io for promo sets that TCGDex
-	// does not provide logos for. This is best-effort: if the call fails we
-	// simply proceed without fallbacks (no logo for promo sets in that run).
-	pokemontcgLogoFallback := buildPokemontcgLogoFallback(ctx)
+	cnt := &counters{}
 
-	log.Info().Msg("==> Fetching set list from TCGDex")
-
-	allSets, err := client.ListSets(ctx, "en")
-	if err != nil {
-		log.Fatal().Err(err).Msg("fetch set list")
-	}
-	log.Info().Msgf("    %d sets available", len(allSets))
-
-	// Apply filters: --set, --series, --recent.
-	sets := allSets
-	switch {
-	case *setCode != "":
-		sets = filterByID(sets, *setCode)
-		if len(sets) == 0 {
-			log.Fatal().Msgf("no set found with id=%q", *setCode)
+	if runScrydex {
+		expansions, err := scrydexClient.ListExpansions(ctx)
+		if err != nil {
+			log.Fatal().Err(err).Msg("list expansions")
 		}
-	case *seriesFilter != "":
-		sets = filterBySeries(sets, *seriesFilter)
-		if len(sets) == 0 {
-			log.Fatal().Msgf("no sets found for series prefix=%q", *seriesFilter)
-		}
-	case *recent > 0:
-		sets = mostRecent(sets, *recent)
-	}
+		log.Info().Msgf("    %d expansions available from Scrydex", len(expansions))
 
-	// Background worker pool for card image downloads.
-	// Buffered channel allows the main import loop to proceed without blocking.
-	jobs := make(chan imgJob, 500)
-	// Derive from the main ctx so workers respect the 120-minute overall deadline.
-	workerCtx, workerCancel := context.WithCancel(ctx)
+		expansions = applyFilters(expansions, *setFilter, *seriesFilter, *langFilter)
+		log.Info().Msgf("    %d expansions after filters", len(expansions))
 
-	var wg sync.WaitGroup
-	if *downloadImages {
-		const numWorkers = 5
-		for i := 0; i < numWorkers; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		if len(expansions) == 0 {
+			log.Warn().Msg("no expansions matched filters — nothing to import")
+		} else {
+			// Background worker pool for image downloads. 3 workers share the same
+			// Scrydex client rate limiter implicitly via separate HTTP clients — the
+			// rate limiter governs the Scrydex API calls, not the image CDN calls.
+			jobs := make(chan imgJob, 200)
+			workerCtx, workerCancel := context.WithCancel(ctx)
+			defer workerCancel()
+
+			var wg sync.WaitGroup
+
+			if !*dryRun && !*skipImages {
+				const numWorkers = 3
 				imgHTTP := &http.Client{Timeout: 30 * time.Second}
-				for job := range jobs {
-					newURL, err := downloadCardImage(workerCtx, imgHTTP, uploadProvider, job.tcg, job.setCode, job.localID, job.imageURL)
-					if err != nil {
-						log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("download image failed")
-						continue
-					}
-					if newURL != "" {
-						// TCGDex provides a single image per card; use it for both small and large.
-						if err := repo.UpdateCardImages(workerCtx, job.cardID, newURL, newURL); err != nil {
-							log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("UpdateCardImages failed")
-						}
-					}
-
-					// Download PT-BR image when available (TCG Pocket cards only).
-					// Uses localID+"_pt" as the filename to avoid colliding with the EN image.
-					if job.imageURLPT != "" {
-						newURLPT, err := downloadCardImage(workerCtx, imgHTTP, uploadProvider, job.tcg, job.setCode, job.localID+"_pt", job.imageURLPT)
-						if err != nil {
-							log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("download PT image failed")
-						} else if newURLPT != "" {
-							if err := repo.UpdateCardImagePT(workerCtx, job.cardID, newURLPT); err != nil {
-								log.Warn().Err(err).Str("card_id", job.cardID.String()).Msg("UpdateCardImagePT failed")
+				for i := 0; i < numWorkers; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for job := range jobs {
+							key := fmt.Sprintf("pokemon/cards/%s/%s.webp", job.setCode, job.scrydexID)
+							newURL, err := downloadAndStore(workerCtx, imgHTTP, provider, key, job.imageURL)
+							if err != nil {
+								log.Warn().Err(err).
+									Str("card", job.scrydexID).
+									Msg("card image download failed")
+								cnt.mu.Lock()
+								cnt.errors++
+								cnt.mu.Unlock()
+								continue
+							}
+							if newURL == "" {
+								// Already existed in S3 — skip the DB update.
+								continue
+							}
+							if err := repo.UpdateCardImages(workerCtx, job.cardID, newURL, newURL); err != nil {
+								log.Warn().Err(err).
+									Str("card", job.scrydexID).
+									Msg("UpdateCardImages failed")
+							} else {
+								cnt.mu.Lock()
+								cnt.imagesDownload++
+								cnt.mu.Unlock()
 							}
 						}
-					}
+					}()
 				}
-			}()
+			}
+
+			httpClient := &http.Client{Timeout: 30 * time.Second}
+
+			for i, exp := range expansions {
+				log.Info().Msgf("[%d/%d] %s — %s (lang=%s, series=%q)",
+					i+1, len(expansions), exp.ID, exp.Name, exp.Language, exp.Series)
+
+				if *dryRun {
+					log.Info().Msgf("    [dry-run] would upsert set %q and its cards", exp.ID)
+					continue
+				}
+
+				if err := importExpansion(ctx, scrydexClient, repo, provider, httpClient, exp, jobs, *skipImages, cnt); err != nil {
+					log.Error().Err(err).Str("expansion", exp.ID).Msg("import expansion failed — skipping")
+					cnt.mu.Lock()
+					cnt.errors++
+					cnt.mu.Unlock()
+				}
+			}
+
+			// Signal workers no more jobs are coming and wait for them to drain.
+			close(jobs)
+			wg.Wait()
 		}
 	}
 
-	importedSets, updatedSets, totalCards := 0, 0, 0
-
-	for i, summary := range sets {
-		log.Info().Msgf("[%d/%d] %s — %s (%d cards)", i+1, len(sets), summary.ID, summary.Name, summary.CardCount.Total)
-
-		// Fetch full EN set (with card list) + PT-BR enrichment in one call.
-		bs, err := tcgdex.EnrichSet(ctx, client, summary.ID)
-		if err != nil {
-			log.Error().Err(err).Str("set", summary.ID).Msg("fetch set details — skipping")
-			continue
-		}
-		if bs == nil {
-			log.Warn().Str("set", summary.ID).Msg("set not found on TCGDex EN — skipping")
-			continue
-		}
-
-		tcgName := detectTCG(bs.Serie.ID)
-
-		// Apply PT-BR fallback for series that TCGDex does not translate.
-		// TCGDex only provides PT-BR for TCG Pocket; the fallback map covers
-		// all main Pokémon TCG series so the language toggle works for them.
-		serieNamePT := bs.SerieNamePT
-		if serieNamePT == "" {
-			if pt, ok := seriesPTFallback[bs.Serie.ID]; ok {
-				serieNamePT = pt
-			}
-		}
-
-		// Upsert the series and capture its UUID.
-		ser, err := repo.UpsertSeriesWithPT(ctx, bs.Serie.Name, serieNamePT, tcgName)
-		if err != nil {
-			log.Error().Err(err).Str("series", bs.Serie.Name).Msg("upsert series — skipping set")
-			continue
-		}
-
-		releaseDate := parseISO8601(bs.ReleaseDate)
-
-		// Resolve image URL: prefer TCGDex logo; fall back to pokemontcg.io logo
-		// for promo sets that TCGDex does not provide logos for.
-		setImageURL := pngURL(bs.Logo)
-		if setImageURL == "" {
-			if fallback, ok := pokemontcgLogoFallback[bs.ID]; ok {
-				setImageURL = fallback
-				log.Debug().Str("set", bs.ID).Str("logo", setImageURL).Msg("using pokemontcg.io logo fallback")
-			}
-		}
-
-		// cardCount.official is the printed total (e.g. 198 in sv01).
-		// When 0, store NULL via UpsertSet's NULLIF($10, 0).
-		dbSet := card.Set{
-			Code:         bs.ID,
-			Name:         bs.Name,
-			NamePT:       bs.NamePT,
-			Series:       bs.Serie.Name,
-			SeriesID:     &ser.ID,
-			TCG:          tcgName,
-			Language:     card.LanguageEnglish,
-			ReleaseDate:  releaseDate,
-			TotalCards:   bs.CardCount.Total,
-			PrintedTotal: bs.CardCount.Official,
-			ImageURL:     setImageURL,
-			SymbolURL:    pngURL(bs.Symbol),
-		}
-
-		if err := repo.UpsertSet(ctx, &dbSet); err != nil {
-			log.Error().Err(err).Str("set", bs.ID).Msg("upsert set — skipping cards")
-			continue
-		}
-
-		// Distinguish new inserts from updates: pgx returns the same created_at on
-		// a new insert, and the original created_at on an update. A sub-second
-		// difference signals a new row.
-		age := dbSet.UpdatedAt.Sub(dbSet.CreatedAt)
-		if age < time.Second {
-			importedSets++
-		} else {
-			updatedSets++
-		}
-
-		// Download set logo and symbol (inline — 1 per set, no worker pool).
-		// TCGDex logo is a base path (no extension); append ".png" at call time.
-		// For promo sets without a TCGDex logo, use the full pokemontcg.io URL directly.
-		if *downloadImages {
-			var logoSrcURL string
-			if bs.Logo != "" {
-				logoSrcURL = bs.Logo + ".png"
-			} else if fallback, ok := pokemontcgLogoFallback[bs.ID]; ok {
-				logoSrcURL = fallback // already a full URL with extension
-				log.Debug().Str("set", bs.ID).Msg("using pokemontcg.io logo fallback for image download")
-			}
-			var symbolSrcURL string
-			if bs.Symbol != "" {
-				symbolSrcURL = bs.Symbol + ".png"
-			}
-			downloadSetImages(ctx, httpClient, uploadProvider, repo, dbSet, tcgName, bs.ID, logoSrcURL, symbolSrcURL)
-		}
-
-		// Import all cards for this set using the card refs already in bs.Cards.
-		// This avoids a redundant GetSet call inside importCards.
-		inserted, updated, skipped := importCards(ctx, client, repo, dbSet, tcgName, bs.Cards, jobs, *downloadImages)
-		log.Info().Msgf("    cards: %d new, %d updated, %d skipped", inserted, updated, skipped)
-		totalCards += inserted + updated
+	if *enrichPT {
+		imgHTTP := &http.Client{Timeout: 30 * time.Second}
+		tcgdexClient := tcgdex.New(30 * time.Second)
+		runPTEnrichment(ctx, repo, provider, imgHTTP, tcgdexClient, *enrichLimit, *dryRun, *skipImages, cnt)
 	}
 
-	// Signal workers that no more jobs are coming, then wait for them to finish.
-	close(jobs)
-	wg.Wait()
-	workerCancel()
-
-	log.Info().Msgf("==> Done: %d sets new, %d sets updated, %d cards processed",
-		importedSets, updatedSets, totalCards)
+	log.Info().
+		Int("sets_new", cnt.setsImported).
+		Int("sets_updated", cnt.setsUpdated).
+		Int("sets_skipped", cnt.setsSkipped).
+		Int("cards_new", cnt.cardsImported).
+		Int("cards_updated", cnt.cardsUpdated).
+		Int("variants_upserted", cnt.variantsUpsert).
+		Int("images_downloaded", cnt.imagesDownload).
+		Int("errors", cnt.errors).
+		Msg("==> Done")
 }
 
-// ----------------------------------------------------------------------------
-// Card import
-// ----------------------------------------------------------------------------
-
-// importCards imports all cards from a set. cardRefs are the CardRef entries already
-// fetched from EnrichSet (avoids a redundant API call). Returns (inserted, updated, skipped).
-func importCards(
+// importExpansion processes a single Scrydex expansion: upserts the series,
+// upserts the set (respecting import_source = 'manual'), downloads set images,
+// and imports all cards with their variants.
+func importExpansion(
 	ctx context.Context,
-	client *tcgdex.Client,
+	client *scrydex.Client,
+	repo *postgres.CardRepo,
+	provider upload.Provider,
+	httpClient *http.Client,
+	exp scrydex.Expansion,
+	jobs chan<- imgJob,
+	skipImages bool,
+	cnt *counters,
+) error {
+	// Upsert series. An empty Series field falls back to "Unknown" so we never
+	// create a NULL series name in the DB.
+	seriesName := exp.Series
+	if seriesName == "" {
+		seriesName = "Unknown"
+	}
+	ser, err := repo.UpsertSeriesWithPT(ctx, seriesName, "", "pokemon")
+	if err != nil {
+		return fmt.Errorf("upsert series %q: %w", seriesName, err)
+	}
+
+	releaseDate := parseISO8601(exp.ReleaseDate)
+
+	// For Japanese expansions the name field already holds the native name.
+	// We store it as both name and name_en so the bilingual toggle has something
+	// to show until a human-curated EN name is entered via the admin UI.
+	nameEN := ""
+	if isJapanese(exp) {
+		nameEN = exp.Name
+	}
+
+	dbSet := card.Set{
+		Code:         exp.ID,
+		Name:         exp.Name,
+		NameEN:       nameEN,
+		SeriesID:     &ser.ID,
+		TCG:          "pokemon",
+		Language:     expansionLanguage(exp),
+		ReleaseDate:  releaseDate,
+		PrintedTotal: exp.PrintedTotal,
+		ImportSource: "scrydex",
+	}
+
+	if err := upsertSetProtected(ctx, repo, &dbSet, exp.LogoURL, exp.SymbolURL); err != nil {
+		return fmt.Errorf("upsert set %q: %w", exp.ID, err)
+	}
+
+	isNew := dbSet.UpdatedAt.Sub(dbSet.CreatedAt) < time.Second
+	cnt.incSet(isNew)
+
+	if !skipImages && provider != nil {
+		downloadSetImages(ctx, httpClient, provider, repo, dbSet, exp.ID, exp.LogoURL, exp.SymbolURL)
+	}
+
+	cards, err := client.ListCards(ctx, exp.ID)
+	if err != nil {
+		// Log but continue — we already persisted the set.
+		log.Error().Err(err).Str("expansion", exp.ID).Msg("list cards failed — set imported, cards skipped")
+		return nil
+	}
+
+	for _, sc := range cards {
+		if err := importCard(ctx, repo, dbSet, sc, jobs, skipImages, cnt); err != nil {
+			log.Error().Err(err).
+				Str("card", sc.ID).
+				Msg("import card failed — skipping")
+			cnt.mu.Lock()
+			cnt.errors++
+			cnt.mu.Unlock()
+		}
+	}
+
+	return nil
+}
+
+// importCard upserts a single card and all its variants, then enqueues the
+// image download job when applicable.
+func importCard(
+	ctx context.Context,
 	repo *postgres.CardRepo,
 	dbSet card.Set,
-	tcgName string,
-	cardRefs []tcgdex.CardRef,
-	imgJobs chan<- imgJob,
-	downloadImages bool,
-) (inserted, updated, skipped int) {
-	// Only fetch PT-BR card names for TCG Pocket sets.
-	// TCGDex has PT-BR translations for Pocket cards but not for main TCG cards,
-	// so we skip ~20k unnecessary requests for the main set corpus.
-	fetchPTBR := tcgName == "pocket"
+	sc scrydex.Card,
+	jobs chan<- imgJob,
+	skipImages bool,
+	cnt *counters,
+) error {
+	dbCard := card.Card{
+		SetID:           dbSet.ID,
+		Number:          sc.Number,
+		CollectorNumber: sc.Number,
+		Name:            sc.Name,
+		ImageLargeURL:   sc.Images.Large,
+		ImageSmallURL:   sc.Images.Small,
+		ImportSource:    "scrydex",
+	}
 
-	for _, ref := range cardRefs {
-		var namePT string
-		var ptImageURL string
-		var fullCard *tcgdex.Card
+	if err := repo.UpsertCard(ctx, &dbCard); err != nil {
+		return fmt.Errorf("upsert card: %w", err)
+	}
 
-		if fetchPTBR {
-			// For TCG Pocket we fetch the full PT-BR card (which also has variant data).
-			ptCard, ferr := client.GetCard(ctx, "pt-br", ref.ID)
-			if ferr != nil {
-				log.Warn().Err(ferr).Str("card", ref.ID).Msg("pt-br card fetch failed")
-			} else if ptCard != nil {
-				namePT = ptCard.Name
-				ptImageURL = ptCard.Image // may differ from EN image for Pocket cards
-			}
-			// Also fetch EN full card for Pocket to get variant flags.
-			enCard, ferr := client.GetCard(ctx, "en", ref.ID)
-			if ferr != nil {
-				log.Warn().Err(ferr).Str("card", ref.ID).Msg("en card fetch failed")
-			} else {
-				fullCard = enCard
-			}
-		}
-		// For main TCG sets we skip per-card API calls entirely (saves ~20k requests).
-		// Variants default to Normal+ReverseHolo (the standard pair for most sets).
-		// Run `import-catalog --set <code>` later to enrich a specific set's variants.
+	isNew := dbCard.UpdatedAt.Sub(dbCard.CreatedAt) < time.Second
+	cnt.incCard(isNew)
 
-		dbCard := card.Card{
-			SetID:           dbSet.ID,
-			Number:          ref.LocalID,
-			CollectorNumber: ref.LocalID,
-			Name:            ref.Name,
-			NamePT:          namePT,
-			// TCGDex image URLs are base paths; append "/high.webp" for the full image.
-			// We store the base URL here and resolve to a local path if --download-images.
-			ImageSmallURL: imageURL(ref.Image),
-			ImageLargeURL: imageURL(ref.Image),
-		}
-
-		wasNew, err := upsertCardWithVariants(ctx, repo, dbSet, &dbCard, ref, fullCard)
-		if err != nil {
-			log.Error().Err(err).Str("card", ref.ID).Msg("upsert card+variants")
-			skipped++
+	for _, sv := range sc.Variants {
+		finish, ok := mapVariantFinish(sv.Name)
+		if !ok {
+			log.Warn().
+				Str("card", sc.ID).
+				Str("variant", sv.Name).
+				Msg("unknown variant name — skipping variant")
 			continue
 		}
-		if wasNew {
-			inserted++
-		} else {
-			updated++
-		}
-
-		if downloadImages && ref.Image != "" {
-			imgJobs <- imgJob{
-				cardID:     dbCard.ID, // populated by UpsertCard RETURNING id inside upsertCardWithVariants
-				setCode:    dbSet.Code,
-				localID:    ref.LocalID,
-				imageURL:   ref.Image,
-				imageURLPT: ptImageURL, // empty for non-Pocket sets
-				tcg:        tcgName,
-			}
-		}
-	}
-	return
-}
-
-// upsertCardWithVariants upserts the card row and creates its variant rows.
-// dbCard is passed by pointer so that UpsertCard's RETURNING clause (which
-// fills dbCard.ID, dbCard.CreatedAt, dbCard.UpdatedAt) is visible to the caller.
-// Returns true if the card was newly inserted (i.e. created_at ≈ updated_at).
-func upsertCardWithVariants(
-	ctx context.Context,
-	repo *postgres.CardRepo,
-	_ card.Set,
-	dbCard *card.Card,
-	ref tcgdex.CardRef,
-	fullCard *tcgdex.Card,
-) (isNew bool, err error) {
-	if err := repo.UpsertCard(ctx, dbCard); err != nil {
-		return false, fmt.Errorf("upsert card: %w", err)
-	}
-	// Detect new row: on INSERT the RETURNING timestamps are equal (both set to now()).
-	// On UPDATE, updated_at is refreshed to now() while created_at keeps its original value.
-	isNew = dbCard.UpdatedAt.Sub(dbCard.CreatedAt) < time.Second
-
-	// Determine variant finishes from the TCGDex Variants struct.
-	var variants tcgdex.Variants
-	if fullCard != nil {
-		variants = fullCard.Variants
-	} else {
-		// Fallback: assume Normal + ReverseHolo — the standard finish pair for
-		// most main-set Pokémon TCG cards when we skip per-card API calls.
-		variants = tcgdex.Variants{Normal: true, Reverse: true}
-	}
-
-	finishes := variantsToFinishes(variants)
-	for _, finish := range finishes {
 		v := card.Variant{
 			CardID: dbCard.ID,
 			Finish: finish,
 		}
 		if err := repo.UpsertVariant(ctx, &v); err != nil {
 			log.Warn().Err(err).
-				Str("card", ref.ID).
+				Str("card", sc.ID).
 				Str("finish", string(finish)).
 				Msg("upsert variant failed")
+		} else {
+			cnt.mu.Lock()
+			cnt.variantsUpsert++
+			cnt.mu.Unlock()
 		}
 	}
 
-	return isNew, nil
-}
+	// When there are no variants at all in the Scrydex response, fall back to
+	// Normal — every card needs at least one variant for pricing to work.
+	if len(sc.Variants) == 0 {
+		v := card.Variant{CardID: dbCard.ID, Finish: card.FinishNormal}
+		if err := repo.UpsertVariant(ctx, &v); err != nil {
+			log.Warn().Err(err).Str("card", sc.ID).Msg("fallback normal variant upsert failed")
+		} else {
+			cnt.mu.Lock()
+			cnt.variantsUpsert++
+			cnt.mu.Unlock()
+		}
+	}
 
-// variantsToFinishes converts TCGDex variant flags to variant_finish ENUM values.
-// Always returns at least [FinishNormal] when no flags are set.
-// WPromo has no dedicated ENUM value and maps to FinishNormal.
-func variantsToFinishes(v tcgdex.Variants) []card.Finish {
-	if !v.Normal && !v.Holo && !v.Reverse && !v.FirstEdition && !v.WPromo {
-		return []card.Finish{card.FinishNormal}
+	if !skipImages && sc.Images.Large != "" && jobs != nil {
+		jobs <- imgJob{
+			cardID:    dbCard.ID,
+			setCode:   dbSet.Code,
+			scrydexID: sc.ID,
+			imageURL:  sc.Images.Large,
+		}
 	}
-	var finishes []card.Finish
-	if v.Normal || v.WPromo {
-		finishes = append(finishes, card.FinishNormal)
-	}
-	if v.Holo {
-		finishes = append(finishes, card.FinishHolo)
-	}
-	if v.Reverse {
-		finishes = append(finishes, card.FinishReverseHolo)
-	}
-	if v.FirstEdition {
-		finishes = append(finishes, card.FinishFirstEdition)
-	}
-	return finishes
+
+	return nil
 }
 
 // ----------------------------------------------------------------------------
-// Image download helpers
+// PT-BR enrichment via TCGDex
 // ----------------------------------------------------------------------------
 
-// downloadSetImages downloads and stores the logo and symbol images for a set.
-// logoSrcURL and symbolSrcURL are fully-resolved URLs ready to fetch (callers
-// are responsible for appending ".png" or using pokemontcg.io URLs as-is).
+// runPTEnrichment queries scrydex cards that are missing PT-BR data and fills
+// name_pt / image_url_pt from the TCGDex API.
+//
+// The TCGDex card ID format is "{setCode}-{localId}" (e.g. "sv01-001"). Scrydex
+// stores the collector number as the numeric part, so we zero-pad it to 3 digits
+// to match the TCGDex convention (e.g. "1" → "001"). This covers most sets;
+// cards that don't follow the pattern simply get a 404 and are skipped silently.
+func runPTEnrichment(
+	ctx context.Context,
+	repo *postgres.CardRepo,
+	provider upload.Provider,
+	imgHTTP *http.Client,
+	tcgdexClient *tcgdex.Client,
+	limit int,
+	dryRun, skipImages bool,
+	cnt *counters,
+) {
+	log.Info().Int("limit", limit).Msg("==> PT enrichment phase")
+
+	if dryRun {
+		log.Info().Msg("    [dry-run] would query candidates and call TCGDex — no writes")
+		return
+	}
+
+	candidates, err := repo.ListCardsForPTEnrichment(ctx, limit)
+	if err != nil {
+		log.Error().Err(err).Msg("list enrichment candidates failed")
+		return
+	}
+	log.Info().Msgf("    %d cards need PT enrichment", len(candidates))
+
+	var enriched, skipped int
+
+	for _, c := range candidates {
+		// TCGDex local IDs use zero-padded 3-digit numbers for purely numeric
+		// collector numbers (e.g. "1" → "sv01-001"), or the raw value for
+		// alphanumeric numbers (e.g. "TG01" → "sv01-TG01").
+		localID := buildTCGDexLocalID(c.SetCode, c.CollectorNumber)
+
+		ptCard, err := tcgdexClient.GetCard(ctx, "pt-br", localID)
+		if err != nil {
+			log.Debug().Err(err).
+				Str("card", localID).
+				Msg("tcgdex get card pt-br failed — skipping")
+			cnt.mu.Lock()
+			cnt.errors++
+			cnt.mu.Unlock()
+			continue
+		}
+		if ptCard == nil {
+			// 404: this card/set is not available in PT-BR — normal for non-Pocket sets.
+			log.Debug().Str("card", localID).Msg("not found in pt-br — skipping")
+			skipped++
+			continue
+		}
+
+		namePT := ptCard.Name
+
+		// The TCGDex image field is a base URL without extension; append /high.webp
+		// for the high-resolution variant used everywhere else in the importer.
+		var imageURLPT string
+		if !skipImages && ptCard.Image != "" && provider != nil {
+			srcURL := ptCard.Image + "/high.webp"
+			key := fmt.Sprintf("pokemon/cards/%s/%s_pt.webp", c.SetCode, c.ID)
+			newURL, err := downloadAndStore(ctx, imgHTTP, provider, key, srcURL)
+			if err != nil {
+				log.Warn().Err(err).
+					Str("card", localID).
+					Msg("pt-br image download failed")
+				cnt.mu.Lock()
+				cnt.errors++
+				cnt.mu.Unlock()
+				// Still persist the name even if the image failed.
+			} else if newURL != "" {
+				imageURLPT = newURL
+				cnt.mu.Lock()
+				cnt.imagesDownload++
+				cnt.mu.Unlock()
+			}
+		}
+
+		if namePT == "" && imageURLPT == "" {
+			skipped++
+			continue
+		}
+
+		if err := repo.UpdateCardPT(ctx, c.ID, namePT, imageURLPT); err != nil {
+			log.Warn().Err(err).
+				Str("card", localID).
+				Msg("UpdateCardPT failed")
+			cnt.mu.Lock()
+			cnt.errors++
+			cnt.mu.Unlock()
+			continue
+		}
+		enriched++
+
+		log.Debug().
+			Str("card", localID).
+			Str("name_pt", namePT).
+			Bool("image_stored", imageURLPT != "").
+			Msg("enriched")
+	}
+
+	log.Info().
+		Int("enriched", enriched).
+		Int("skipped_no_pt", skipped).
+		Int("errors", cnt.errors).
+		Msg("==> PT enrichment done")
+}
+
+// buildTCGDexLocalID constructs a TCGDex card ID from a set code and collector
+// number. Purely numeric collector numbers are zero-padded to 3 digits to match
+// the TCGDex convention (e.g. "1" → "sv01-001"). Alphanumeric numbers such as
+// "TG01" or "SWSH001" are used verbatim (e.g. "sv01-TG01").
+func buildTCGDexLocalID(setCode, collectorNumber string) string {
+	if n, err := strconv.Atoi(collectorNumber); err == nil {
+		return fmt.Sprintf("%s-%03d", setCode, n)
+	}
+	return fmt.Sprintf("%s-%s", setCode, collectorNumber)
+}
+
+// upsertSetProtected skips manual sets and delegates to UpsertSet for all others.
+// When the set exists with import_source = 'manual', s is populated from the
+// existing row so callers can use s.ID for the card import loop.
+func upsertSetProtected(ctx context.Context, repo *postgres.CardRepo, s *card.Set, logoURL, symbolURL string) error {
+	existing, err := repo.GetSetByCode(ctx, s.Code)
+	if err == nil && existing.ImportSource == "manual" {
+		log.Info().Str("set", s.Code).Msg("skipping manual set")
+		*s = existing
+		return nil
+	}
+
+	// Attach resolved image URLs so the SQL COALESCE fills them in on insert
+	// but does not overwrite already-stored S3 keys on update.
+	s.ImageURL = logoURL
+	s.SymbolURL = symbolURL
+
+	return repo.UpsertSet(ctx, s)
+}
+
+// downloadSetImages downloads the logo and symbol for a set and updates the DB.
 func downloadSetImages(
 	ctx context.Context,
 	httpClient *http.Client,
 	provider upload.Provider,
 	repo *postgres.CardRepo,
 	dbSet card.Set,
-	tcg, setID, logoSrcURL, symbolSrcURL string,
+	setID, logoURL, symbolURL string,
 ) {
-	if logoSrcURL != "" {
-		key := fmt.Sprintf("%s/sets/%s_logo.png", tcg, setID)
-		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, logoSrcURL); err != nil {
+	if logoURL != "" {
+		key := fmt.Sprintf("pokemon/sets/%s_logo.png", setID)
+		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, logoURL); err != nil {
 			log.Warn().Err(err).Str("set", setID).Msg("download set logo failed")
 		} else if newURL != "" {
 			if err := repo.UpdateSetImageURL(ctx, dbSet.ID, newURL); err != nil {
@@ -486,9 +595,9 @@ func downloadSetImages(
 			}
 		}
 	}
-	if symbolSrcURL != "" {
-		key := fmt.Sprintf("%s/sets/%s_symbol.png", tcg, setID)
-		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, symbolSrcURL); err != nil {
+	if symbolURL != "" {
+		key := fmt.Sprintf("pokemon/sets/%s_symbol.png", setID)
+		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, symbolURL); err != nil {
 			log.Warn().Err(err).Str("set", setID).Msg("download set symbol failed")
 		} else if newURL != "" {
 			if err := repo.UpdateSetSymbolURL(ctx, dbSet.ID, newURL); err != nil {
@@ -498,26 +607,12 @@ func downloadSetImages(
 	}
 }
 
-// downloadCardImage downloads a card image to the storage provider.
-// TCGDex image base URLs need "/high.webp" appended for the full-size webp image.
-func downloadCardImage(
-	ctx context.Context,
-	imgHTTP *http.Client,
-	provider upload.Provider,
-	tcg, setCode, localID, baseURL string,
-) (string, error) {
-	if baseURL == "" {
-		return "", nil
-	}
-	key := fmt.Sprintf("%s/cards/%s/%s.webp", tcg, setCode, localID)
-	return downloadAndStore(ctx, imgHTTP, provider, key, baseURL+"/high.webp")
-}
-
-// downloadAndStore downloads srcURL and stores it at key via provider.
-// Returns the public URL. Skips (returns existing URL) if the file already exists.
+// downloadAndStore fetches srcURL and stores it at key via provider.
+// Returns ("", nil) when the file already exists — callers skip the DB update.
+// Returns (publicURL, nil) on a successful new download.
 func downloadAndStore(
 	ctx context.Context,
-	imgHTTP *http.Client,
+	httpClient *http.Client,
 	provider upload.Provider,
 	key, srcURL string,
 ) (string, error) {
@@ -530,16 +625,18 @@ func downloadAndStore(
 		return "", fmt.Errorf("exists check %s: %w", key, err)
 	}
 	if exists {
-		return provider.PublicURL(key), nil
+		// Already in storage — return empty string so callers know to skip the
+		// DB update (the URL is already correct from a previous run).
+		return "", nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srcURL, nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("build request: %w", err)
 	}
-	resp, err := imgHTTP.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("http get %s: %w", srcURL, err)
 	}
 	defer resp.Body.Close()
 
@@ -547,16 +644,8 @@ func downloadAndStore(
 		return "", fmt.Errorf("download %s: status %d", srcURL, resp.StatusCode)
 	}
 
-	ext := strings.ToLower(filepath.Ext(path.Base(key)))
-	contentType := "image/png"
-	switch ext {
-	case ".webp":
-		contentType = "image/webp"
-	case ".jpg", ".jpeg":
-		contentType = "image/jpeg"
-	}
-
-	publicURL, err := provider.Put(ctx, key, io.Reader(resp.Body), contentType)
+	contentType := contentTypeFromKey(key)
+	publicURL, err := provider.Put(ctx, key, resp.Body, contentType)
 	if err != nil {
 		return "", fmt.Errorf("put %s: %w", key, err)
 	}
@@ -564,34 +653,83 @@ func downloadAndStore(
 }
 
 // ----------------------------------------------------------------------------
-// TCG detection and utilities
+// Variant mapping
 // ----------------------------------------------------------------------------
 
-// detectTCG returns the platform TCG identifier for a given TCGDex serie.id.
-// TCG Pocket sets use serie.id = "tcgp" in the TCGDex API.
-func detectTCG(serieID string) string {
-	if serieID == "tcgp" {
-		return "pocket"
+// mapVariantFinish converts a Scrydex variant name to the variant_finish ENUM.
+// Returns (finish, true) on a known name, or ("", false) for unknown names so
+// the caller can log and skip gracefully.
+func mapVariantFinish(name string) (card.Finish, bool) {
+	switch name {
+	case "normal":
+		return card.FinishNormal, true
+	case "holofoil":
+		return card.FinishHolo, true
+	case "reverseHolofoil":
+		return card.FinishReverseHolo, true
+	// First-edition variants and unlimiteds all map to Holo — they differ in
+	// edition stamp, not in the finish itself.
+	case "firstEditionHolofoil",
+		"firstEditionShadowlessHolofoil",
+		"unlimitedHolofoil",
+		"unlimitedShadowlessHolofoil":
+		return card.FinishHolo, true
+	default:
+		return "", false
 	}
-	return "pokemon"
 }
 
-// imageURL returns the TCGDex high-quality webp image URL for a card.
-// TCGDex image fields are base paths; "/high.webp" gives the best quality.
-func imageURL(base string) string {
-	if base == "" {
-		return ""
+// ----------------------------------------------------------------------------
+// Filter helpers
+// ----------------------------------------------------------------------------
+
+// applyFilters applies the --set, --series, and --lang flags to the expansion list.
+func applyFilters(exps []scrydex.Expansion, setFilter, seriesFilter, langFilter string) []scrydex.Expansion {
+	var out []scrydex.Expansion
+	for _, e := range exps {
+		if setFilter != "" && !strings.EqualFold(e.ID, setFilter) {
+			continue
+		}
+		if seriesFilter != "" && !strings.EqualFold(e.Series, seriesFilter) {
+			continue
+		}
+		if langFilter != "all" && !strings.EqualFold(e.Language, langFilter) {
+			continue
+		}
+		out = append(out, e)
 	}
-	return base + "/high.webp"
+	return out
 }
 
-// pngURL appends ".png" to a TCGDex base URL (used for set logos and symbols).
-func pngURL(base string) string {
-	if base == "" {
-		return ""
+// ----------------------------------------------------------------------------
+// Language helpers
+// ----------------------------------------------------------------------------
+
+// expansionLanguage maps a Scrydex Expansion to the domain Language constant.
+func expansionLanguage(exp scrydex.Expansion) card.Language {
+	lang := strings.ToLower(exp.Language)
+	switch lang {
+	case "ja", "japanese":
+		return card.LanguageJapanese
+	case "ko", "korean":
+		return card.LanguageKorean
+	case "zh-tw", "chinese":
+		return card.LanguageChinese
+	default:
+		return card.LanguageEnglish
 	}
-	return base + ".png"
 }
+
+// isJapanese reports whether this expansion is a Japanese-language release.
+func isJapanese(exp scrydex.Expansion) bool {
+	return strings.EqualFold(exp.Language, "ja") ||
+		strings.EqualFold(exp.Language, "japanese") ||
+		strings.EqualFold(exp.Region, "japan")
+}
+
+// ----------------------------------------------------------------------------
+// Misc utilities
+// ----------------------------------------------------------------------------
 
 // parseISO8601 parses a date string in "2006-01-02" or "2006/01/02" format.
 func parseISO8601(s string) *time.Time {
@@ -607,75 +745,14 @@ func parseISO8601(s string) *time.Time {
 	return nil
 }
 
-func filterByID(sets []tcgdex.SetSummary, id string) []tcgdex.SetSummary {
-	var out []tcgdex.SetSummary
-	for _, s := range sets {
-		if strings.EqualFold(s.ID, id) {
-			out = append(out, s)
-		}
+// contentTypeFromKey derives a MIME type from the file extension in a storage key.
+func contentTypeFromKey(key string) string {
+	switch strings.ToLower(filepath.Ext(path.Base(key))) {
+	case ".webp":
+		return "image/webp"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	default:
+		return "image/png"
 	}
-	return out
-}
-
-func filterBySeries(sets []tcgdex.SetSummary, prefix string) []tcgdex.SetSummary {
-	lp := strings.ToLower(prefix)
-	var out []tcgdex.SetSummary
-	for _, s := range sets {
-		if strings.HasPrefix(strings.ToLower(s.ID), lp) {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// mostRecent returns the N sets with the lexicographically largest IDs.
-// This is a heuristic since SetSummary does not include release dates.
-func mostRecent(sets []tcgdex.SetSummary, n int) []tcgdex.SetSummary {
-	sorted := make([]tcgdex.SetSummary, len(sets))
-	copy(sorted, sets)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		return sorted[i].ID > sorted[j].ID
-	})
-	if n > len(sorted) {
-		n = len(sorted)
-	}
-	return sorted[:n]
-}
-
-// buildPokemontcgLogoFallback queries pokemontcg.io for all sets and returns a
-// map of set code → logo URL. This is used as a fallback image source for promo
-// sets that TCGDex does not supply logos for.
-//
-// The call is best-effort: on any error the function logs a warning and returns
-// an empty map so the rest of the import continues unaffected.
-//
-// POKEMON_TCG_API_KEY is optional but raises the rate limit from 1k to 20k
-// requests per day when provided.
-func buildPokemontcgLogoFallback(ctx context.Context) map[string]string {
-	apiKey := os.Getenv("POKEMON_TCG_API_KEY")
-	ptcgClient := pokemontcgio.New(30*time.Second, apiKey)
-
-	// Use a shorter deadline so a slow pokemontcg.io response does not stall
-	// the whole import for long.
-	fetchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	sets, err := ptcgClient.ListSets(fetchCtx)
-	if err != nil {
-		log.Warn().Err(err).Msg("pokemontcg.io ListSets failed — promo set logos will be skipped")
-		return nil
-	}
-
-	m := make(map[string]string, len(sets))
-	for _, s := range sets {
-		if s.LogoURL != "" {
-			// pokemontcg.io set IDs match TCGDex set IDs for the main game
-			// (e.g. "sv1", "swsh1", "sm1"). The map key is lowercased to be
-			// consistent with TCGDex's own ID casing.
-			m[strings.ToLower(s.ID)] = s.LogoURL
-		}
-	}
-
-	log.Info().Msgf("    pokemontcg.io logo fallback: %d sets loaded", len(m))
-	return m
 }

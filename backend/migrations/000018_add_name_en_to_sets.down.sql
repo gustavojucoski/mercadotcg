@@ -1,0 +1,1 @@
+ALTER TABLE card_sets DROP COLUMN IF EXISTS name_en;
