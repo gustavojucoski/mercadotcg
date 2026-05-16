@@ -61,7 +61,7 @@ func ScoreResult(ctx context.Context, pool *pgxpool.Pool, q scraper.Query) (scor
 	return scoreResult{score: 0}, nil
 }
 
-// pass1ExactSetCodeAndNumber: set_code case-insensitive + card.number exato.
+// pass1ExactSetCodeAndNumber: set_code case-insensitive + card.collector_number exato.
 // Retorna todas as variantes do card encontrado (pode ser mais de uma,
 // e.g., holo + reverse holo do mesmo número).
 func pass1ExactSetCodeAndNumber(ctx context.Context, pool *pgxpool.Pool, q scraper.Query) ([]uuid.UUID, error) {
@@ -74,13 +74,13 @@ func pass1ExactSetCodeAndNumber(ctx context.Context, pool *pgxpool.Pool, q scrap
 		JOIN cards c ON c.id = cv.card_id
 		JOIN card_sets cs ON cs.id = c.set_id
 		WHERE LOWER(cs.code) = LOWER($1)
-		  AND c.number = $2`
+		  AND c.collector_number = $2`
 
 	return queryVariantIDs(ctx, pool, sql, q.SetCode, q.Number)
 }
 
 // pass2SetNameIlikeAndNumber: set_name com ILIKE (tolerante a case/espaços extras)
-// + card.number exato.
+// + card.collector_number exato.
 func pass2SetNameIlikeAndNumber(ctx context.Context, pool *pgxpool.Pool, q scraper.Query) ([]uuid.UUID, error) {
 	if q.SetName == "" || q.Number == "" {
 		return nil, nil
@@ -91,7 +91,7 @@ func pass2SetNameIlikeAndNumber(ctx context.Context, pool *pgxpool.Pool, q scrap
 		JOIN cards c ON c.id = cv.card_id
 		JOIN card_sets cs ON cs.id = c.set_id
 		WHERE cs.name ILIKE $1
-		  AND c.number = $2`
+		  AND c.collector_number = $2`
 
 	return queryVariantIDs(ctx, pool, sql, "%"+q.SetName+"%", q.Number)
 }
@@ -107,7 +107,7 @@ func pass3TrigramNameAndNumber(ctx context.Context, pool *pgxpool.Pool, q scrape
 		SELECT cv.id
 		FROM card_variants cv
 		JOIN cards c ON c.id = cv.card_id
-		WHERE c.number = $2
+		WHERE c.collector_number = $2
 		  AND similarity(c.name, $1) > 0.3
 		ORDER BY similarity(c.name, $1) DESC
 		LIMIT 5`
@@ -131,7 +131,7 @@ func pass4NumberOnly(ctx context.Context, pool *pgxpool.Pool, q scraper.Query) (
 			FROM card_variants cv
 			JOIN cards c ON c.id = cv.card_id
 			JOIN card_sets cs ON cs.id = c.set_id
-			WHERE c.number = $1
+			WHERE c.collector_number = $1
 			  AND LOWER(cs.code) = LOWER($2)`
 		return queryVariantIDs(ctx, pool, sql, q.Number, q.SetCode)
 	}
@@ -140,7 +140,7 @@ func pass4NumberOnly(ctx context.Context, pool *pgxpool.Pool, q scraper.Query) (
 		SELECT cv.id
 		FROM card_variants cv
 		JOIN cards c ON c.id = cv.card_id
-		WHERE c.number = $1`
+		WHERE c.collector_number = $1`
 	return queryVariantIDs(ctx, pool, sql, q.Number)
 }
 

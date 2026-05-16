@@ -307,15 +307,15 @@ func (r *CardRepo) ListSeries(ctx context.Context, tcg string) ([]card.Series, e
 
 const insertCardSQL = `
 INSERT INTO cards (
-    set_id, number, collector_number, name, name_pt, rarity, supertype, subtypes, types,
+    set_id, collector_number, name, name_pt, rarity, supertype, subtypes, types,
     hp, illustrator, image_small_url, image_large_url, external_ids
 ) VALUES (
-    $1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''), $8, $9,
-    NULLIF($10, 0), NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), $14
+    $1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7, $8,
+    NULLIF($9, 0), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''), $13
 )
 RETURNING id, created_at, updated_at`
 
-// CreateCard insere uma carta. (set_id, number) é UNIQUE — colisão vira ErrAlreadyExists.
+// CreateCard insere uma carta. (set_id, collector_number) é UNIQUE — colisão vira ErrAlreadyExists.
 func (r *CardRepo) CreateCard(ctx context.Context, c *card.Card) error {
 	external := c.ExternalIDs
 	if external == nil {
@@ -323,7 +323,7 @@ func (r *CardRepo) CreateCard(ctx context.Context, c *card.Card) error {
 	}
 
 	err := r.pool.QueryRow(ctx, insertCardSQL,
-		c.SetID, c.Number, c.CollectorNumber, c.Name, c.NamePT,
+		c.SetID, c.CollectorNumber, c.Name, c.NamePT,
 		c.Rarity, c.Supertype, c.Subtypes, c.Types,
 		c.HP, c.Illustrator, c.ImageSmallURL, c.ImageLargeURL, external,
 	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
@@ -338,26 +338,25 @@ func (r *CardRepo) CreateCard(ctx context.Context, c *card.Card) error {
 	return nil
 }
 
-// upsertCardSQL uses (set_id, number) as the natural key (matches the existing UNIQUE constraint).
-// On conflict, updates name, name_pt, collector_number, image URLs, and import_source so re-runs are safe.
+// upsertCardSQL uses (set_id, collector_number) as the natural key.
+// On conflict, updates name, name_pt, image URLs, and import_source so re-runs are safe.
 // import_source is included so that cards imported via Scrydex are correctly tagged
 // and ListCardsForPTEnrichment (which filters on import_source = 'scrydex') works as expected.
 const upsertCardSQL = `
 INSERT INTO cards (
-    set_id, number, collector_number, name, name_pt,
+    set_id, collector_number, name, name_pt,
     rarity, supertype, subtypes, types,
     hp, illustrator, image_small_url, image_large_url, external_ids,
     import_source
 ) VALUES (
-    $1, $2, $3, $4, NULLIF($5, ''),
-    NULLIF($6, ''), NULLIF($7, ''), $8, $9,
-    NULLIF($10, 0), NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), $14,
-    $15
+    $1, $2, $3, NULLIF($4, ''),
+    NULLIF($5, ''), NULLIF($6, ''), $7, $8,
+    NULLIF($9, 0), NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''), $13,
+    $14
 )
-ON CONFLICT (set_id, number) DO UPDATE SET
+ON CONFLICT (set_id, collector_number) DO UPDATE SET
     name            = EXCLUDED.name,
     name_pt         = COALESCE(EXCLUDED.name_pt, cards.name_pt),
-    collector_number= EXCLUDED.collector_number,
     rarity          = COALESCE(EXCLUDED.rarity, cards.rarity),
     -- Never overwrite an existing image URL: UpdateCardImages is the sole owner
     -- of image_*_url after the initial insert. This prevents re-imports from
@@ -368,7 +367,7 @@ ON CONFLICT (set_id, number) DO UPDATE SET
     updated_at      = now()
 RETURNING id, created_at, updated_at`
 
-// UpsertCard inserts or updates a card. The natural key is (set_id, number).
+// UpsertCard inserts or updates a card. The natural key is (set_id, collector_number).
 // Safe for repeated import runs. Populates c.ID, c.CreatedAt, c.UpdatedAt.
 func (r *CardRepo) UpsertCard(ctx context.Context, c *card.Card) error {
 	external := c.ExternalIDs
@@ -381,7 +380,7 @@ func (r *CardRepo) UpsertCard(ctx context.Context, c *card.Card) error {
 	}
 
 	err := r.pool.QueryRow(ctx, upsertCardSQL,
-		c.SetID, c.Number, c.CollectorNumber, c.Name, c.NamePT,
+		c.SetID, c.CollectorNumber, c.Name, c.NamePT,
 		c.Rarity, c.Supertype, c.Subtypes, c.Types,
 		c.HP, c.Illustrator, c.ImageSmallURL, c.ImageLargeURL, external,
 		importSource,
@@ -415,7 +414,7 @@ func (r *CardRepo) UpsertVariant(ctx context.Context, v *card.Variant) error {
 }
 
 const selectCardByIDSQL = `
-SELECT id, set_id, number, COALESCE(collector_number, ''), name::text, COALESCE(name_pt, ''),
+SELECT id, set_id, COALESCE(collector_number, ''), name::text, COALESCE(name_pt, ''),
        COALESCE(rarity, ''), COALESCE(supertype, ''),
        COALESCE(subtypes, '{}'::text[]), COALESCE(types, '{}'::text[]),
        COALESCE(hp, 0), COALESCE(illustrator, ''),
@@ -428,7 +427,7 @@ FROM cards WHERE id = $1`
 func (r *CardRepo) GetCardByID(ctx context.Context, id uuid.UUID) (card.Card, error) {
 	var c card.Card
 	err := r.pool.QueryRow(ctx, selectCardByIDSQL, id).Scan(
-		&c.ID, &c.SetID, &c.Number, &c.CollectorNumber, &c.Name, &c.NamePT,
+		&c.ID, &c.SetID, &c.CollectorNumber, &c.Name, &c.NamePT,
 		&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
 		&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
 		&c.ImageURLPT,
@@ -444,7 +443,7 @@ func (r *CardRepo) GetCardByID(ctx context.Context, id uuid.UUID) (card.Card, er
 }
 
 const searchCardsByNameSQL = `
-SELECT id, set_id, number, COALESCE(collector_number, ''), name::text, COALESCE(name_pt, ''),
+SELECT id, set_id, COALESCE(collector_number, ''), name::text, COALESCE(name_pt, ''),
        COALESCE(rarity, ''), COALESCE(supertype, ''),
        COALESCE(subtypes, '{}'::text[]), COALESCE(types, '{}'::text[]),
        COALESCE(hp, 0), COALESCE(illustrator, ''),
@@ -464,7 +463,7 @@ LIMIT $2`
 // primeiro quando o usuário digita só o nome.
 const lookupCardsSQL = `
 SELECT
-    c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
+    c.id, c.set_id, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
     COALESCE(c.rarity, ''), COALESCE(c.supertype, ''),
     COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
     COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
@@ -484,12 +483,12 @@ JOIN card_sets s ON s.id = c.set_id
 LEFT JOIN card_series cr ON cr.id = s.series_id
 WHERE
     (NULLIF($1, '') IS NULL OR c.name % $1)
-    AND (NULLIF($2, '') IS NULL OR c.number = $2 OR c.collector_number = $2)
+    AND (NULLIF($2, '') IS NULL OR c.collector_number = $2)
     AND (NULLIF($3, '') IS NULL OR s.code = $3)
 ORDER BY
     CASE WHEN $1 <> '' THEN similarity(c.name::text, $1) ELSE 1.0 END DESC,
     s.release_date DESC NULLS LAST,
-    c.number ASC
+    c.collector_number ASC
 LIMIT $4`
 
 // LookupCards executa o lookup combinado.
@@ -514,7 +513,7 @@ func (r *CardRepo) LookupCards(
 		var cw card.CardWithSet
 		var lang string
 		if err := rows.Scan(
-			&cw.Card.ID, &cw.Card.SetID, &cw.Card.Number, &cw.Card.CollectorNumber,
+			&cw.Card.ID, &cw.Card.SetID, &cw.Card.CollectorNumber,
 			&cw.Card.Name, &cw.Card.NamePT,
 			&cw.Card.Rarity, &cw.Card.Supertype, &cw.Card.Subtypes, &cw.Card.Types,
 			&cw.Card.HP, &cw.Card.Illustrator, &cw.Card.ImageSmallURL, &cw.Card.ImageLargeURL,
@@ -553,7 +552,7 @@ func (r *CardRepo) SearchCardsByName(ctx context.Context, q string, limit int) (
 	for rows.Next() {
 		var c card.Card
 		if err := rows.Scan(
-			&c.ID, &c.SetID, &c.Number, &c.CollectorNumber, &c.Name, &c.NamePT,
+			&c.ID, &c.SetID, &c.CollectorNumber, &c.Name, &c.NamePT,
 			&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
 			&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
 			&c.ExternalIDs, &c.CreatedAt, &c.UpdatedAt,
@@ -730,7 +729,7 @@ SELECT
     cv.finish::text,
     COALESCE(cv.label, ''),
     c.name::text,
-    c.number,
+    COALESCE(c.collector_number, ''),
     cs.name,
     cs.code,
     COALESCE(c.image_small_url, '')
@@ -890,7 +889,7 @@ func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid
 }
 
 const listCardsBySetCodeSQL = `
-SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
+SELECT c.id, c.set_id, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
        COALESCE(c.rarity, ''), COALESCE(c.supertype, ''),
        COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
        COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
@@ -933,7 +932,7 @@ func (r *CardRepo) ListCardsBySetCode(ctx context.Context, setCode string, page,
 	for rows.Next() {
 		var cw CardWithVariants
 		if err := rows.Scan(
-			&cw.ID, &cw.SetID, &cw.Number, &cw.CollectorNumber, &cw.Name, &cw.NamePT,
+			&cw.ID, &cw.SetID, &cw.CollectorNumber, &cw.Name, &cw.NamePT,
 			&cw.Rarity, &cw.Supertype, &cw.Subtypes, &cw.Types,
 			&cw.HP, &cw.Illustrator, &cw.ImageSmallURL, &cw.ImageLargeURL,
 			&cw.ImageURLPT,
@@ -984,7 +983,7 @@ func (r *CardRepo) ListCardsBySetCode(ctx context.Context, setCode string, page,
 }
 
 const getCardBySetAndNumberSQL = `
-SELECT c.id, c.set_id, c.number, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
+SELECT c.id, c.set_id, COALESCE(c.collector_number, ''), c.name::text, COALESCE(c.name_pt, ''),
        COALESCE(c.rarity, ''), COALESCE(c.supertype, ''),
        COALESCE(c.subtypes, '{}'::text[]), COALESCE(c.types, '{}'::text[]),
        COALESCE(c.hp, 0), COALESCE(c.illustrator, ''),
@@ -1020,7 +1019,7 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 	var lang string
 
 	err := r.pool.QueryRow(ctx, getCardBySetAndNumberSQL, setCode, collectorNumber).Scan(
-		&c.ID, &c.SetID, &c.Number, &c.CollectorNumber, &c.Name, &c.NamePT,
+		&c.ID, &c.SetID, &c.CollectorNumber, &c.Name, &c.NamePT,
 		&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
 		&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
 		&c.ImageURLPT,

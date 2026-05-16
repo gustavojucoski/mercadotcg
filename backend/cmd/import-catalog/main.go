@@ -372,7 +372,6 @@ func importCard(
 ) error {
 	dbCard := card.Card{
 		SetID:           dbSet.ID,
-		Number:          sc.Number,
 		CollectorNumber: sc.Number,
 		Name:            sc.Name,
 		ImageLargeURL:   sc.LargeImageURL(),
