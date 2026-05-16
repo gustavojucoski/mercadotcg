@@ -50,7 +50,7 @@ export function VariantTabs({ variants, imageSrc, imageSrcPt, imageAlt }: Varian
                     : 'border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:border-violet-400'
                 }`}
               >
-                {finishLabel(v.finish, v.label)}
+                {finishLabel(v.finish, v.label, v.is_promo)}
               </button>
             ))}
           </div>
@@ -59,12 +59,7 @@ export function VariantTabs({ variants, imageSrc, imageSrcPt, imageAlt }: Varian
         {active && (
           <div className="mt-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
             <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 mb-3">
-              {finishLabel(active.finish, active.label)}
-              {active.is_promo && (
-                <span className="ml-2 inline-block rounded bg-yellow-100 dark:bg-yellow-950/40 text-yellow-700 dark:text-yellow-400 text-[10px] font-medium px-1.5 py-0.5">
-                  PROMO
-                </span>
-              )}
+              {finishLabel(active.finish, active.label, active.is_promo)}
             </h3>
             {active.price_summary ? (
               <div className="grid grid-cols-3 gap-3 text-center">

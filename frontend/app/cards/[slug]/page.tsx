@@ -80,7 +80,7 @@ export default async function CardDetailPage({ params }: Props) {
       priceCurrency: 'BRL',
       price: v.price_summary?.min_brl ?? '0',
       availability: 'https://schema.org/InStock',
-      name: finishLabel(v.finish, v.label),
+      name: finishLabel(v.finish, v.label, v.is_promo),
     })),
   }
 
@@ -208,13 +208,8 @@ export default async function CardDetailPage({ params }: Props) {
                     className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 flex items-center justify-between gap-4"
                   >
                     <div>
-                      <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-                        {finishLabel(v.finish, v.label)}
-                        {v.is_promo && (
-                          <span className="inline-block rounded bg-yellow-100 dark:bg-yellow-950/40 text-yellow-700 dark:text-yellow-400 text-[10px] font-medium px-1.5 py-0.5">
-                            PROMO
-                          </span>
-                        )}
+                      <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                        {finishLabel(v.finish, v.label, v.is_promo)}
                       </p>
                       {v.price_summary && (
                         <p className="text-xs text-zinc-400 mt-0.5">

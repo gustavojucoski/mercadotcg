@@ -56,6 +56,10 @@ import (
 	"github.com/gustavojucoski/mercadotcg/backend/internal/upload"
 )
 
+// hgssPromoStart is the release date from which Cosmos Holo became the exclusive
+// promo finish in the Pokémon TCG (HeartGold & SoulSilver era, November 2009).
+var hgssPromoStart = time.Date(2009, 11, 1, 0, 0, 0, 0, time.UTC)
+
 // imgJob describes a card image download to be processed by the worker pool.
 type imgJob struct {
 	cardID    uuid.UUID
@@ -394,6 +398,10 @@ func importCard(
 				Str("variant", sv.Name).
 				Msg("unknown variant name — skipping variant")
 			continue
+		}
+		// Cosmos Holo became the exclusive promo finish from HGSS (Nov 2009) onwards.
+		if finish == card.FinishCosmosHolo && dbSet.ReleaseDate != nil && !dbSet.ReleaseDate.Before(hgssPromoStart) {
+			isPromo = true
 		}
 		v := card.Variant{
 			CardID:  dbCard.ID,
