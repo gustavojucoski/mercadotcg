@@ -60,8 +60,9 @@ import (
 type imgJob struct {
 	cardID    uuid.UUID
 	setCode   string
-	scrydexID string // Scrydex card ID (e.g. "sv8-199") used as filename base
-	imageURL  string // full URL for the large image
+	tcg       string    // "pokemon" or "pocket" — determines the S3 key prefix
+	scrydexID string    // Scrydex card ID (e.g. "sv8-199") used as filename base
+	imageURL  string    // full URL for the large image
 }
 
 // counters tracks import progress for the final summary log.
@@ -202,7 +203,7 @@ func main() {
 					go func() {
 						defer wg.Done()
 						for job := range jobs {
-							key := fmt.Sprintf("pokemon/cards/%s/%s.webp", job.setCode, job.scrydexID)
+							key := fmt.Sprintf("%s/cards/%s/%s.webp", job.tcg, job.setCode, job.scrydexID)
 							newURL, err := downloadAndStore(workerCtx, imgHTTP, provider, key, job.imageURL)
 							if err != nil {
 								log.Warn().Err(err).
@@ -294,7 +295,8 @@ func importExpansion(
 	if seriesName == "" {
 		seriesName = "Unknown"
 	}
-	ser, err := repo.UpsertSeriesWithPT(ctx, seriesName, "", "pokemon")
+	tcg := expansionTCG(exp)
+	ser, err := repo.UpsertSeriesWithPT(ctx, seriesName, "", tcg)
 	if err != nil {
 		return fmt.Errorf("upsert series %q: %w", seriesName, err)
 	}
@@ -317,7 +319,7 @@ func importExpansion(
 		Name:         name,
 		NameEN:       nameEN,
 		SeriesID:     &ser.ID,
-		TCG:          "pokemon",
+		TCG:          tcg,
 		Language:     expansionLanguage(exp),
 		ReleaseDate:  releaseDate,
 		TotalCards:   exp.Total,
@@ -429,6 +431,7 @@ func importCard(
 		jobs <- imgJob{
 			cardID:    dbCard.ID,
 			setCode:   dbSet.Code,
+			tcg:       string(dbSet.TCG),
 			scrydexID: sc.ID,
 			imageURL:  sc.LargeImageURL(),
 		}
@@ -591,8 +594,9 @@ func downloadSetImages(
 	dbSet card.Set,
 	setID, logoURL, symbolURL string,
 ) {
+	tcg := string(dbSet.TCG)
 	if logoURL != "" {
-		key := fmt.Sprintf("pokemon/sets/%s_logo.png", setID)
+		key := fmt.Sprintf("%s/sets/%s_logo.png", tcg, setID)
 		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, logoURL); err != nil {
 			log.Warn().Err(err).Str("set", setID).Msg("download set logo failed")
 		} else if newURL != "" {
@@ -602,7 +606,7 @@ func downloadSetImages(
 		}
 	}
 	if symbolURL != "" {
-		key := fmt.Sprintf("pokemon/sets/%s_symbol.png", setID)
+		key := fmt.Sprintf("%s/sets/%s_symbol.png", tcg, setID)
 		if newURL, err := downloadAndStore(ctx, httpClient, provider, key, symbolURL); err != nil {
 			log.Warn().Err(err).Str("set", setID).Msg("download set symbol failed")
 		} else if newURL != "" {
@@ -965,6 +969,15 @@ func applyFilters(exps []scrydex.Expansion, setFilter, seriesFilter, langFilter 
 // ----------------------------------------------------------------------------
 // Language helpers
 // ----------------------------------------------------------------------------
+
+// expansionTCG returns "pokemon-pocket" for TCG Pocket expansions (identified
+// by the "tcgp-" ID prefix) and "pokemon" for all standard Pokémon TCG releases.
+func expansionTCG(exp scrydex.Expansion) string {
+	if strings.HasPrefix(exp.ID, "tcgp-") {
+		return "pokemon-pocket"
+	}
+	return "pokemon"
+}
 
 // expansionLanguage maps a Scrydex Expansion to the domain Language constant.
 func expansionLanguage(exp scrydex.Expansion) card.Language {

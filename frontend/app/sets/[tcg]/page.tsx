@@ -7,8 +7,8 @@ import { fetchSets } from '@/lib/catalog'
 export const revalidate = 86400
 
 const SUPPORTED_TCGS: Record<string, string> = {
-  pokemon: 'Pokémon TCG',
-  pocket: 'Pokémon TCG Pocket',
+  pokemon:          'Pokémon TCG',
+  'pokemon-pocket': 'Pokémon TCG Pocket',
 }
 
 interface Props {
