@@ -52,13 +52,12 @@ const (
 	LanguageChinese    Language = "zh-tw" // Traditional Chinese; TCGDex lang code is "zh-tw"
 )
 
-// Card representa uma carta de TCG, identificada por (set, número).
+// Card representa uma carta de TCG, identificada por (set, collector_number).
 // As variações de acabamento (holo, master ball, etc.) ficam em Variant.
 type Card struct {
 	ID              uuid.UUID         `json:"id"`
 	SetID           uuid.UUID         `json:"set_id"`
-	Number          string            `json:"number"`
-	CollectorNumber string            `json:"collector_number,omitempty"`
+	CollectorNumber string            `json:"collector_number"`
 	NamePT          string            `json:"name_pt,omitempty"`
 	Name            string            `json:"name"`
 	Rarity        string            `json:"rarity,omitempty"`

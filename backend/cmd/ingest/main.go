@@ -471,7 +471,7 @@ const listAllVariantsSQL = `
 SELECT
     cv.id::text,
     c.name::text,
-    c.number,
+    COALESCE(c.collector_number, ''),
     cs.code,
     cs.name,
     COALESCE(cs.total_cards, 0)
@@ -479,7 +479,7 @@ FROM card_variants cv
 JOIN cards      c  ON c.id  = cv.card_id
 JOIN card_sets  cs ON cs.id = c.set_id
 WHERE cs.code <> ''
-ORDER BY cs.release_date DESC NULLS LAST, c.number ASC`
+ORDER BY cs.release_date DESC NULLS LAST, c.collector_number ASC`
 
 func listAllVariants(ctx context.Context, pool *pgxpool.Pool) ([]variantRow, error) {
 	rows, err := pool.Query(ctx, listAllVariantsSQL)
