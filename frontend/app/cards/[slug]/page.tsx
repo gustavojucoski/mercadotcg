@@ -5,6 +5,7 @@ import { Breadcrumb } from '@/components/Breadcrumb'
 import { VariantTabs } from '@/components/VariantTabs'
 import { LocalizedText } from '@/components/LocalizedText'
 import { fetchCard } from '@/lib/catalog'
+import { finishLabel } from '@/lib/variants'
 
 export const revalidate = 3600
 
@@ -32,20 +33,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   } catch {
     return { title: 'Carta | MercadoTCG' }
   }
-}
-
-const FINISH_LABEL: Record<string, string> = {
-  holo: 'Holo',
-  reverse_holo: 'Reverse Holo',
-  normal: 'Normal',
-  etched: 'Etched',
-  master_ball: 'Master Ball',
-  poke_ball: 'Poke Ball',
-}
-
-function finishLabel(finish: string, label?: string): string {
-  if (label && label.length > 0) return label
-  return FINISH_LABEL[finish] ?? finish
 }
 
 function formatBRL(value: string): string {

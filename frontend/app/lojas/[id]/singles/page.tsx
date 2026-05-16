@@ -14,6 +14,7 @@ import {
   CardVariant,
   SaleInput,
 } from '@/lib/stores-admin'
+import { finishLabel } from '@/lib/variants'
 
 // ---- constants -------------------------------------------------------------
 
@@ -60,9 +61,7 @@ function formatBRL(value: string | undefined): string {
 }
 
 function variantLabel(v: CardVariant): string {
-  if (v.label) return v.label
-  const finish = v.finish.replace(/_/g, ' ')
-  return finish.charAt(0).toUpperCase() + finish.slice(1)
+  return finishLabel(v.finish, v.label)
 }
 
 function bestSignalAvg(item: StockItemWithSignal): string | undefined {
