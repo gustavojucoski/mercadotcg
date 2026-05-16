@@ -53,7 +53,7 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 
 ## Status Atual
 
-**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro.
+**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'`.
 
 ### Migrations
 
@@ -76,6 +76,7 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 | 000016 | `card_sets.symbol_url`; `tcg='pocket'` no CHECK; índices GIN para autocomplete bilíngue |
 | 000017 | `cards.image_url_pt` — imagem PT-BR (TCG Pocket via TCGDex) |
 | 000019 | `card_sets.import_source`, `cards.import_source` VARCHAR(32) DEFAULT `'tcgdex_legacy'` (ADR-028) |
+| 000020 | CHECK constraint `'pocket'` → `'pokemon-pocket'`; migra 19 sets `tcgp-*` de `tcg='pokemon'` para `tcg='pokemon-pocket'`; recria séries Pocket com novo valor (PR #16) |
 
 ### Fontes de catálogo (PR #15 — ADRs 027–028)
 
