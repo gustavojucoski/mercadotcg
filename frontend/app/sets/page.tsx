@@ -25,10 +25,10 @@ const TCG_LIST = [
     ),
   },
   {
-    id: 'pocket',
+    id: 'pokemon-pocket',
     label: 'Pokémon TCG Pocket',
     description: 'Sets exclusivos do aplicativo TCG Pocket com nomes em português.',
-    href: '/sets/pocket',
+    href: '/sets/pokemon-pocket',
     sets: '14+',
     color: 'from-blue-400 to-indigo-600',
     icon: (
