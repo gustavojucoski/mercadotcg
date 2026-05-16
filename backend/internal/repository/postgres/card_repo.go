@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1042,10 +1043,10 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 	return c, s, nil
 }
 
-// autocompleteSQL usa UNION ALL para priorizar matches de prefixo sobre matches
-// de similaridade (trgm). O UNION é necessário porque ORDER BY não pode ser
-// aplicado internamente em cada ramo antes da combinação sem subquery.
-const autocompleteSQL = `
+// autocompleteNameSQL é usado quando a query NÃO contém "/".
+// Prioriza matches de prefixo (priority=1) sobre matches de similaridade trgm (priority=2).
+// Parâmetros: $1=query, $2=limit, $3=tcg ('' = todos os TCGs).
+const autocompleteNameSQL = `
 SELECT id, name, name_pt, collector_number, set_code, set_name, image_small_url, priority
 FROM (
     (
@@ -1057,8 +1058,7 @@ FROM (
       FROM cards c
       JOIN card_sets s ON s.id = c.set_id
       WHERE (c.name ILIKE $1 || '%' OR c.name_pt ILIKE $1 || '%'
-             OR (c.collector_number ILIKE SPLIT_PART($1, '/', 1) || '%'
-                 AND (SPLIT_PART($1, '/', 2) = '' OR COALESCE(s.printed_total, s.total_cards)::text LIKE SPLIT_PART($1, '/', 2) || '%')))
+             OR c.collector_number ILIKE $1 || '%')
         AND ($3 = '' OR s.tcg = $3)
       LIMIT $2
     )
@@ -1074,10 +1074,8 @@ FROM (
           SELECT c2.id FROM cards c2
           JOIN card_sets s2 ON s2.id = c2.set_id
           WHERE (c2.name ILIKE $1 || '%' OR c2.name_pt ILIKE $1 || '%'
-                 OR (c2.collector_number ILIKE SPLIT_PART($1, '/', 1) || '%'
-                     AND (SPLIT_PART($1, '/', 2) = '' OR COALESCE(s2.printed_total, s2.total_cards)::text LIKE SPLIT_PART($1, '/', 2) || '%')))
+                 OR c2.collector_number ILIKE $1 || '%')
             AND ($3 = '' OR s2.tcg = $3)
-          -- sem LIMIT aqui: excluir TODOS os matches de prefixo para evitar duplicatas
       )
       AND (c.name::text % $1 OR c.name_pt % $1)
       AND ($3 = '' OR s.tcg = $3)
@@ -1088,15 +1086,76 @@ FROM (
 ORDER BY priority, name
 LIMIT $2`
 
+// autocompleteNumberSQL é usado quando a query contém "/".
+// Filtra por collector_number exato e/ou printed_total do set.
+// Parâmetros: $1=collectorExact (''=>ignora), $2=totalExact (''=>ignora), $3=limit, $4=tcg.
+const autocompleteNumberSQL = `
+SELECT c.id, c.name::text AS name, COALESCE(c.name_pt, '') AS name_pt,
+       COALESCE(c.collector_number, '') AS collector_number,
+       s.code AS set_code, s.name::text AS set_name,
+       COALESCE(c.image_small_url, '') AS image_small_url
+FROM cards c
+JOIN card_sets s ON s.id = c.set_id
+WHERE ($1 = '' OR c.collector_number = $1)
+  AND ($2 = '' OR COALESCE(s.printed_total, s.total_cards)::text = $2)
+  AND ($4 = '' OR s.tcg = $4)
+ORDER BY c.collector_number::int NULLS LAST, c.collector_number
+LIMIT $3`
+
+// autocompleteParsed contém os campos extraídos da query do usuário.
+type autocompleteParsed struct {
+	nameQuery       string // query original, usada na busca por nome/prefixo
+	collectorPrefix string // prefixo de collector_number (sem "/")
+	collectorExact  string // collector_number exato (parte à esquerda de "/")
+	totalExact      string // printed_total exato (parte à direita de "/")
+	isNumberSearch  bool   // true quando a query contém "/"
+}
+
+// parseAutocompleteQuery interpreta a query do usuário em Go, evitando SPLIT_PART/CASE no SQL.
+// Exemplos:
+//
+//	"pikachu"  → nameQuery="pikachu", collectorPrefix="pikachu"
+//	"1"        → nameQuery="1", collectorPrefix="1"
+//	"1/217"    → collectorExact="1", totalExact="217", isNumberSearch=true
+//	"/217"     → collectorExact="", totalExact="217", isNumberSearch=true
+//	"1/"       → collectorExact="1", totalExact="", isNumberSearch=true
+func parseAutocompleteQuery(q string) autocompleteParsed {
+	idx := strings.Index(q, "/")
+	if idx < 0 {
+		return autocompleteParsed{nameQuery: q, collectorPrefix: q}
+	}
+	left := strings.TrimSpace(q[:idx])
+	right := strings.TrimSpace(q[idx+1:])
+	return autocompleteParsed{
+		collectorExact: left,
+		totalExact:     right,
+		isNumberSearch: true,
+	}
+}
+
 // AutocompleteCards busca cartas para sugestão de busca rápida.
-// Prioriza matches de prefixo; usa similaridade trgm como fallback.
+// Quando a query contém "/" usa busca por número/total; caso contrário busca por nome ou prefixo.
 // limit é capped a 20 — valores maiores são truncados no caller (handler usa 8).
 func (r *CardRepo) AutocompleteCards(ctx context.Context, q, tcg string, limit int) ([]AutocompleteResult, error) {
 	if limit <= 0 || limit > 20 {
 		limit = 8
 	}
 
-	rows, err := r.pool.Query(ctx, autocompleteSQL, q, limit, tcg)
+	parsed := parseAutocompleteQuery(q)
+
+	var rows pgx.Rows
+	var err error
+
+	if parsed.isNumberSearch {
+		// Ambos vazios só acontece se o usuário digitou apenas "/", o que não é útil.
+		if parsed.collectorExact == "" && parsed.totalExact == "" {
+			return nil, nil
+		}
+		rows, err = r.pool.Query(ctx, autocompleteNumberSQL,
+			parsed.collectorExact, parsed.totalExact, limit, tcg)
+	} else {
+		rows, err = r.pool.Query(ctx, autocompleteNameSQL, q, limit, tcg)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("autocomplete cards: %w", err)
 	}
@@ -1105,12 +1164,21 @@ func (r *CardRepo) AutocompleteCards(ctx context.Context, q, tcg string, limit i
 	var out []AutocompleteResult
 	for rows.Next() {
 		var a AutocompleteResult
-		var priority int
-		if err := rows.Scan(
-			&a.ID, &a.Name, &a.NamePT, &a.CollectorNumber,
-			&a.SetCode, &a.SetName, &a.ImageSmallURL, &priority,
-		); err != nil {
-			return nil, fmt.Errorf("scan autocomplete row: %w", err)
+		if parsed.isNumberSearch {
+			if err := rows.Scan(
+				&a.ID, &a.Name, &a.NamePT, &a.CollectorNumber,
+				&a.SetCode, &a.SetName, &a.ImageSmallURL,
+			); err != nil {
+				return nil, fmt.Errorf("scan autocomplete row: %w", err)
+			}
+		} else {
+			var priority int
+			if err := rows.Scan(
+				&a.ID, &a.Name, &a.NamePT, &a.CollectorNumber,
+				&a.SetCode, &a.SetName, &a.ImageSmallURL, &priority,
+			); err != nil {
+				return nil, fmt.Errorf("scan autocomplete row: %w", err)
+			}
 		}
 		a.Slug = fmt.Sprintf("%s-%s", a.SetCode, a.CollectorNumber)
 		out = append(out, a)
