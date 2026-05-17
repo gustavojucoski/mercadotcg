@@ -14,9 +14,9 @@ export const FINISH_LABEL: Record<string, string> = {
 }
 
 /** Returns a human-readable label for a card variant.
- *  Priority: promo > explicit label > finish ENUM translation. */
+ *  Priority: explicit label > promo > finish ENUM translation. */
 export function finishLabel(finish: string, label?: string | null, isPromo?: boolean): string {
-  if (isPromo) return 'Promo'
   if (label && label.length > 0) return label
+  if (isPromo) return 'Promo'
   return FINISH_LABEL[finish] ?? finish
 }
