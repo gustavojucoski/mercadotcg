@@ -179,6 +179,11 @@ func (r *CardRepo) CreateCardAdmin(ctx context.Context, c *card.Card) error {
 // UpdateSet aplica um patch parcial em um set. Campos nil são preservados.
 // Marca import_source='manual' para indicar edição via admin.
 func (r *CardRepo) UpdateSet(ctx context.Context, id uuid.UUID, p SetPatch) (card.Set, error) {
+	if p.Name == nil && p.NamePT == nil && p.NameEN == nil && p.SeriesID == nil &&
+		p.ReleaseDate == nil && p.TotalCards == nil && p.PrintedTotal == nil {
+		return r.GetSetByID(ctx, id)
+	}
+
 	setClauses := []string{"updated_at = now()", "import_source = 'manual'"}
 	args := []any{id}
 	i := 2
@@ -234,6 +239,11 @@ func (r *CardRepo) UpdateSet(ctx context.Context, id uuid.UUID, p SetPatch) (car
 // UpdateCard aplica um patch parcial em uma carta. Catch 23505 → ErrAlreadyExists.
 // Marca import_source='manual' para indicar edição via admin.
 func (r *CardRepo) UpdateCard(ctx context.Context, id uuid.UUID, p CardPatch) (card.Card, error) {
+	if p.Name == nil && p.NamePT == nil && p.CollectorNumber == nil && p.Rarity == nil &&
+		p.Supertype == nil && p.Subtypes == nil && p.Types == nil && p.HP == nil && p.Illustrator == nil {
+		return r.GetCardByID(ctx, id)
+	}
+
 	setClauses := []string{"updated_at = now()", "import_source = 'manual'"}
 	args := []any{id}
 	i := 2
@@ -523,6 +533,7 @@ SELECT cs.id, cs.code, cs.name, COALESCE(cs.name_pt, ''), COALESCE(cs.name_en, '
        cs.language, cs.release_date, COALESCE(cs.total_cards, 0), COALESCE(cs.printed_total, 0),
        COALESCE(cs.image_url, '') AS image_url,
        COALESCE(cs.symbol_url, '') AS symbol_url,
+       COALESCE(cs.import_source, '') AS import_source,
        cs.created_at, cs.updated_at,
        COUNT(*) OVER() AS total
 FROM card_sets cs
@@ -562,6 +573,7 @@ func (r *CardRepo) ListSetsByTCGFiltered(ctx context.Context, tcg string, series
 			&s.TCG,
 			&lang, &s.ReleaseDate, &s.TotalCards, &s.PrintedTotal,
 			&s.ImageURL, &s.SymbolURL,
+			&s.ImportSource,
 			&s.CreatedAt, &s.UpdatedAt,
 			&total,
 		); err != nil {

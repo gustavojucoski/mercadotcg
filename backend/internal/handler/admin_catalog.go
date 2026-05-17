@@ -44,6 +44,7 @@ func (h *AdminCatalogHandler) Routes(r chi.Router) {
 
 	// Cards
 	admin.Post("/admin/cards", h.createCard)
+	admin.Get("/admin/cards/{id}", h.getCard)
 	admin.Patch("/admin/cards/{id}", h.patchCard)
 	admin.Post("/admin/cards/{id}/image", h.uploadCardImage)
 	admin.Post("/admin/cards/{id}/image-pt", h.uploadCardImagePT)
@@ -363,6 +364,21 @@ func (h *AdminCatalogHandler) deleteSet(w http.ResponseWriter, r *http.Request) 
 }
 
 // ---- Cards ------------------------------------------------------------------
+
+// GET /admin/cards/{id}
+func (h *AdminCatalogHandler) getCard(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeBadRequest(w, "id inválido")
+		return
+	}
+	c, err := h.cards.GetCardByID(r.Context(), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
 
 // POST /admin/cards
 func (h *AdminCatalogHandler) createCard(w http.ResponseWriter, r *http.Request) {

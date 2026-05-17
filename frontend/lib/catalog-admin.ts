@@ -172,9 +172,8 @@ export async function deleteAdminSet(id: string, confirmCode: string): Promise<v
 
 // ── Cards ────────────────────────────────────────────────────────────────────
 
-// fetchAdminCard uses the existing public endpoint that accepts UUID (GET /cards/{id})
 export async function fetchAdminCard(id: string): Promise<CatalogCard> {
-  const res = await authedFetch(`${API_URL}/api/v1/cards/${id}`)
+  const res = await authedFetch(`${API_URL}/api/v1/admin/cards/${id}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error((body as { error?: string }).error || `Erro ao buscar carta: ${res.status}`)

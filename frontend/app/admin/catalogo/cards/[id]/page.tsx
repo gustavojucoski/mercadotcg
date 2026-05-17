@@ -257,9 +257,9 @@ function VariantRow({ variant, onUpdated, onDeleted }: VariantRowProps) {
     }
   }
 
-  if (editing) {
-    return (
-      <>
+  return (
+    <>
+      {editing ? (
         <tr className="bg-violet-50/50 dark:bg-violet-900/10">
           <td className="px-4 py-2.5">
             <input
@@ -314,62 +314,46 @@ function VariantRow({ variant, onUpdated, onDeleted }: VariantRowProps) {
             {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
           </td>
         </tr>
-        {showDeleteModal && (
-          <ConfirmDeleteModal
-            title="Deletar variante"
-            description={`Deletar a variante "${variant.finish}"? Esta acao nao pode ser desfeita.`}
-            confirmValue={variant.finish}
-            deleting={deleting}
-            error={deleteError}
-            blockedBy={deleteBlockedBy}
-            onConfirm={handleDelete}
-            onClose={() => setShowDeleteModal(false)}
-          />
-        )}
-      </>
-    )
-  }
-
-  return (
-    <>
-      <tr className="bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
-        <td className="px-4 py-2.5 font-mono text-xs text-zinc-600 dark:text-zinc-400">
-          {variant.finish}
-        </td>
-        <td className="px-4 py-2.5 text-zinc-700 dark:text-zinc-300 text-xs">
-          {variant.label || <span className="italic text-zinc-300 dark:text-zinc-600">—</span>}
-        </td>
-        <td className="px-4 py-2.5 text-center">
-          {variant.is_promo ? (
-            <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 px-2 py-0.5 text-xs font-medium">
-              Promo
-            </span>
-          ) : (
-            <span className="text-zinc-300 dark:text-zinc-600 text-xs">—</span>
-          )}
-        </td>
-        <td className="px-4 py-2.5 text-zinc-500 text-xs max-w-[200px] truncate">
-          {variant.notes || <span className="italic text-zinc-300 dark:text-zinc-600">—</span>}
-        </td>
-        <td className="px-4 py-2.5 text-right">
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="rounded px-2 py-1 text-xs font-medium text-violet-600 hover:text-violet-700 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
-            >
-              Editar
-            </button>
-            <button
-              type="button"
-              onClick={() => { setDeleteError(''); setDeleteBlockedBy(undefined); setShowDeleteModal(true) }}
-              className={btnDangerSm}
-            >
-              Deletar
-            </button>
-          </div>
-        </td>
-      </tr>
+      ) : (
+        <tr className="bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+          <td className="px-4 py-2.5 font-mono text-xs text-zinc-600 dark:text-zinc-400">
+            {variant.finish}
+          </td>
+          <td className="px-4 py-2.5 text-zinc-700 dark:text-zinc-300 text-xs">
+            {variant.label || <span className="italic text-zinc-300 dark:text-zinc-600">—</span>}
+          </td>
+          <td className="px-4 py-2.5 text-center">
+            {variant.is_promo ? (
+              <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 px-2 py-0.5 text-xs font-medium">
+                Promo
+              </span>
+            ) : (
+              <span className="text-zinc-300 dark:text-zinc-600 text-xs">—</span>
+            )}
+          </td>
+          <td className="px-4 py-2.5 text-zinc-500 text-xs max-w-[200px] truncate">
+            {variant.notes || <span className="italic text-zinc-300 dark:text-zinc-600">—</span>}
+          </td>
+          <td className="px-4 py-2.5 text-right">
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="rounded px-2 py-1 text-xs font-medium text-violet-600 hover:text-violet-700 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
+              >
+                Editar
+              </button>
+              <button
+                type="button"
+                onClick={() => { setDeleteError(''); setDeleteBlockedBy(undefined); setShowDeleteModal(true) }}
+                className={btnDangerSm}
+              >
+                Deletar
+              </button>
+            </div>
+          </td>
+        </tr>
+      )}
       {showDeleteModal && (
         <ConfirmDeleteModal
           title="Deletar variante"
@@ -432,7 +416,7 @@ function NewVariantRow({ cardId, onCreated }: NewVariantRowProps) {
           type="text"
           value={finish}
           onChange={e => setFinish(e.target.value)}
-          placeholder="ex: holo_rare"
+          placeholder="ex: holo"
           className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-violet-500"
           required
         />
@@ -554,12 +538,12 @@ export default function EditCardPage() {
         collector_number: collectorNumber.trim(),
         rarity: rarity.trim() || undefined,
         supertype: supertype.trim() || undefined,
-        subtypes: subtypes
+        subtypes: subtypes.trim()
           ? subtypes.split(',').map(s => s.trim()).filter(Boolean)
-          : [],
-        types: types
+          : undefined,
+        types: types.trim()
           ? types.split(',').map(s => s.trim()).filter(Boolean)
-          : [],
+          : undefined,
         hp: hp ? Number(hp) : undefined,
         illustrator: illustrator.trim() || undefined,
       })
