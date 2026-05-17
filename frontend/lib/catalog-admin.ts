@@ -87,7 +87,7 @@ export async function fetchAdminSets(params: {
   if (params.page) qs.set('page', String(params.page))
   if (params.limit) qs.set('limit', String(params.limit))
 
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/sets?${qs.toString()}`)
+  const res = await authedFetch(`${API_URL}/api/v1/admin/sets?${qs.toString()}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error((body as { error?: string }).error || `Erro ao listar sets: ${res.status}`)
@@ -96,7 +96,7 @@ export async function fetchAdminSets(params: {
 }
 
 export async function fetchAdminSet(id: string): Promise<CatalogSet> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/sets/${id}`)
+  const res = await authedFetch(`${API_URL}/api/v1/admin/sets/${id}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error((body as { error?: string }).error || `Erro ao buscar set: ${res.status}`)
@@ -105,7 +105,7 @@ export async function fetchAdminSet(id: string): Promise<CatalogSet> {
 }
 
 export async function createAdminSet(body: Partial<CatalogSet>): Promise<CatalogSet> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/sets`, {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/sets`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -118,7 +118,7 @@ export async function createAdminSet(body: Partial<CatalogSet>): Promise<Catalog
 }
 
 export async function patchAdminSet(id: string, body: Partial<CatalogSet>): Promise<CatalogSet> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/sets/${id}`, {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/sets/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -137,7 +137,9 @@ export async function uploadSetImage(
 ): Promise<{ image_url?: string; symbol_url?: string }> {
   const form = new FormData()
   form.append('image', file)
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/sets/${id}/images/${slot}`, {
+  // Backend has separate endpoints: POST /admin/sets/{id}/image and /symbol
+  const endpoint = slot === 'image' ? 'image' : 'symbol'
+  const res = await authedFetch(`${API_URL}/api/v1/admin/sets/${id}/${endpoint}`, {
     method: 'POST',
     body: form,
   })
@@ -149,7 +151,7 @@ export async function uploadSetImage(
 }
 
 export async function deleteAdminSet(id: string, confirmCode: string): Promise<void> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/sets/${id}`, {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/sets/${id}`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ confirm_code: confirmCode }),
@@ -170,8 +172,9 @@ export async function deleteAdminSet(id: string, confirmCode: string): Promise<v
 
 // ── Cards ────────────────────────────────────────────────────────────────────
 
+// fetchAdminCard uses the existing public endpoint that accepts UUID (GET /cards/{id})
 export async function fetchAdminCard(id: string): Promise<CatalogCard> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/cards/${id}`)
+  const res = await authedFetch(`${API_URL}/api/v1/cards/${id}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error((body as { error?: string }).error || `Erro ao buscar carta: ${res.status}`)
@@ -182,7 +185,7 @@ export async function fetchAdminCard(id: string): Promise<CatalogCard> {
 export async function createAdminCard(
   body: Partial<CatalogCard> & { set_id: string },
 ): Promise<CatalogCard> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/cards`, {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/cards`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -198,7 +201,7 @@ export async function patchAdminCard(
   id: string,
   body: Partial<CatalogCard>,
 ): Promise<CatalogCard> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/cards/${id}`, {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/cards/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -217,7 +220,9 @@ export async function uploadCardImage(
 ): Promise<{ image_small_url?: string; image_large_url?: string; image_url_pt?: string }> {
   const form = new FormData()
   form.append('image', file)
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/cards/${id}/images/${slot}`, {
+  // Backend: POST /admin/cards/{id}/image (EN) and /admin/cards/{id}/image-pt (PT)
+  const endpoint = slot === 'pt' ? 'image-pt' : 'image'
+  const res = await authedFetch(`${API_URL}/api/v1/admin/cards/${id}/${endpoint}`, {
     method: 'POST',
     body: form,
   })
@@ -232,7 +237,7 @@ export async function deleteAdminCard(
   id: string,
   confirmCollectorNumber: string,
 ): Promise<void> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/cards/${id}`, {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/cards/${id}`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ confirm_collector_number: confirmCollectorNumber }),
@@ -254,7 +259,7 @@ export async function deleteAdminCard(
 
 export async function fetchCardVariants(cardId: string): Promise<CatalogVariant[]> {
   const res = await authedFetch(
-    `${API_URL}/api/v1/admin/catalog/cards/${cardId}/variants`,
+    `${API_URL}/api/v1/admin/cards/${cardId}/variants`,
   )
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
@@ -268,7 +273,7 @@ export async function createAdminVariant(
   body: { finish: string; label?: string; is_promo: boolean; notes?: string },
 ): Promise<CatalogVariant> {
   const res = await authedFetch(
-    `${API_URL}/api/v1/admin/catalog/cards/${cardId}/variants`,
+    `${API_URL}/api/v1/admin/cards/${cardId}/variants`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -288,7 +293,7 @@ export async function patchAdminVariant(
   id: string,
   body: Partial<CatalogVariant>,
 ): Promise<CatalogVariant> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/variants/${id}`, {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/variants/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -303,7 +308,7 @@ export async function patchAdminVariant(
 }
 
 export async function deleteAdminVariant(id: string): Promise<void> {
-  const res = await authedFetch(`${API_URL}/api/v1/admin/catalog/variants/${id}`, {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/variants/${id}`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ confirm: true }),
