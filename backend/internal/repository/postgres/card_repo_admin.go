@@ -359,6 +359,17 @@ func (r *CardRepo) UpdateVariant(ctx context.Context, id uuid.UUID, p VariantPat
 
 // ---- Deletes ----------------------------------------------------------------
 
+// ErrDeleteBlocked é retornado quando um delete é bloqueado por registros dependentes.
+// Carrega as contagens para que o handler construa a resposta 409.
+type ErrDeleteBlocked struct {
+	Stock    int
+	Listings int
+}
+
+func (e ErrDeleteBlocked) Error() string {
+	return fmt.Sprintf("delete blocked: %d stock, %d listings", e.Stock, e.Listings)
+}
+
 // WithTx executa fn dentro de uma transação. Faz rollback automaticamente em caso de erro.
 func (r *CardRepo) WithTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	tx, err := r.pool.Begin(ctx)
@@ -395,10 +406,30 @@ func (r *CardRepo) DeleteSet(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// DeleteSetWithCards apaga todas as cartas do set e depois o set, em uma única transação.
-// Garante atomicidade frente ao RESTRICT de cards.set_id → card_sets.
+// DeleteSetWithCards atomicamente verifica bloqueios e apaga cartas + set em uma transação.
+// Retorna ErrDeleteBlocked se há stock ou listings ativos, ErrNotFound se o set não existe.
 func (r *CardRepo) DeleteSetWithCards(ctx context.Context, id uuid.UUID) error {
 	return r.WithTx(ctx, func(tx pgx.Tx) error {
+		var stock, listings int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(DISTINCT c.id)
+			FROM cards c
+			JOIN card_variants cv ON cv.card_id = c.id
+			JOIN stock_items si ON si.variant_id = cv.id
+			WHERE c.set_id = $1 AND si.quantity > 0`, id).Scan(&stock); err != nil {
+			return fmt.Errorf("count stock in tx: %w", err)
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(DISTINCT c.id)
+			FROM cards c
+			JOIN card_variants cv ON cv.card_id = c.id
+			JOIN listings l ON l.variant_id = cv.id
+			WHERE c.set_id = $1 AND l.status = 'active'::listing_status`, id).Scan(&listings); err != nil {
+			return fmt.Errorf("count listings in tx: %w", err)
+		}
+		if stock > 0 || listings > 0 {
+			return ErrDeleteBlocked{Stock: stock, Listings: listings}
+		}
 		if err := r.DeleteCardsBySetIDTx(ctx, tx, id); err != nil {
 			return err
 		}
@@ -413,29 +444,66 @@ func (r *CardRepo) DeleteSetWithCards(ctx context.Context, id uuid.UUID) error {
 	})
 }
 
-// DeleteCard apaga uma carta. As variantes cascateiam (FK ON DELETE CASCADE).
-// price_history e price_daily também cascateiam via card_variants (ADR-031).
+// DeleteCard atomicamente verifica bloqueios e apaga a carta em uma transação.
+// As variantes cascateiam (FK ON DELETE CASCADE). price_history/price_daily idem (ADR-031).
+// Retorna ErrDeleteBlocked se há stock ou listings ativos.
 func (r *CardRepo) DeleteCard(ctx context.Context, id uuid.UUID) error {
-	tag, err := r.pool.Exec(ctx, "DELETE FROM cards WHERE id = $1", id)
-	if err != nil {
-		return fmt.Errorf("delete card: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return r.WithTx(ctx, func(tx pgx.Tx) error {
+		var stock, listings int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM stock_items si
+			JOIN card_variants cv ON cv.id = si.variant_id
+			WHERE cv.card_id = $1 AND si.quantity > 0`, id).Scan(&stock); err != nil {
+			return fmt.Errorf("count stock in tx: %w", err)
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM listings l
+			JOIN card_variants cv ON cv.id = l.variant_id
+			WHERE cv.card_id = $1 AND l.status = 'active'::listing_status`, id).Scan(&listings); err != nil {
+			return fmt.Errorf("count listings in tx: %w", err)
+		}
+		if stock > 0 || listings > 0 {
+			return ErrDeleteBlocked{Stock: stock, Listings: listings}
+		}
+		tag, err := tx.Exec(ctx, "DELETE FROM cards WHERE id = $1", id)
+		if err != nil {
+			return fmt.Errorf("delete card: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 }
 
-// DeleteVariant apaga uma variante. price_history e price_daily cascateiam (ADR-031).
+// DeleteVariant atomicamente verifica bloqueios e apaga a variante em uma transação.
+// price_history e price_daily cascateiam (ADR-031).
+// Retorna ErrDeleteBlocked se há stock ou listings ativos.
 func (r *CardRepo) DeleteVariant(ctx context.Context, id uuid.UUID) error {
-	tag, err := r.pool.Exec(ctx, "DELETE FROM card_variants WHERE id = $1", id)
-	if err != nil {
-		return fmt.Errorf("delete variant: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return r.WithTx(ctx, func(tx pgx.Tx) error {
+		var stock, listings int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FROM stock_items WHERE variant_id = $1 AND quantity > 0`, id).Scan(&stock); err != nil {
+			return fmt.Errorf("count stock in tx: %w", err)
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FROM listings WHERE variant_id = $1 AND status = 'active'::listing_status`, id).Scan(&listings); err != nil {
+			return fmt.Errorf("count listings in tx: %w", err)
+		}
+		if stock > 0 || listings > 0 {
+			return ErrDeleteBlocked{Stock: stock, Listings: listings}
+		}
+		tag, err := tx.Exec(ctx, "DELETE FROM card_variants WHERE id = $1", id)
+		if err != nil {
+			return fmt.Errorf("delete variant: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 }
 
 // ---- Guards de delete -------------------------------------------------------

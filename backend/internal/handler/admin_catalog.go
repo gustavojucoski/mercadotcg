@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -250,6 +251,10 @@ func (h *AdminCatalogHandler) patchSet(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
+	if req.Name != nil && *req.Name == "" {
+		writeBadRequest(w, "name não pode ser vazio")
+		return
+	}
 
 	patch := postgres.SetPatch{
 		Name:         req.Name,
@@ -333,28 +338,19 @@ func (h *AdminCatalogHandler) deleteSet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	stock, err := h.cards.CountCardsWithActiveStockInSet(r.Context(), id)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	listings, err := h.cards.CountCardsWithActiveListingsInSet(r.Context(), id)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if stock > 0 || listings > 0 {
+	err = h.cards.DeleteSetWithCards(r.Context(), id)
+	var blocked postgres.ErrDeleteBlocked
+	if errors.As(err, &blocked) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": "set contém cartas em uso",
 			"blocked_by": map[string]int{
-				"cards_with_stock":    stock,
-				"cards_with_listings": listings,
+				"cards_with_stock":    blocked.Stock,
+				"cards_with_listings": blocked.Listings,
 			},
 		})
 		return
 	}
-
-	if err := h.cards.DeleteSetWithCards(r.Context(), id); err != nil {
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -519,28 +515,19 @@ func (h *AdminCatalogHandler) deleteCard(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	stock, err := h.cards.CountActiveStockForCard(r.Context(), id)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	listings, err := h.cards.CountActiveListingsForCard(r.Context(), id)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if stock > 0 || listings > 0 {
+	err = h.cards.DeleteCard(r.Context(), id)
+	var blocked postgres.ErrDeleteBlocked
+	if errors.As(err, &blocked) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": "carta em uso",
 			"blocked_by": map[string]int{
-				"stock_items": stock,
-				"listings":    listings,
+				"stock_items": blocked.Stock,
+				"listings":    blocked.Listings,
 			},
 		})
 		return
 	}
-
-	if err := h.cards.DeleteCard(r.Context(), id); err != nil {
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -659,28 +646,19 @@ func (h *AdminCatalogHandler) deleteVariant(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	stock, err := h.cards.CountActiveStockForVariant(r.Context(), id)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	listings, err := h.cards.CountActiveListingsForVariant(r.Context(), id)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if stock > 0 || listings > 0 {
+	err = h.cards.DeleteVariant(r.Context(), id)
+	var blocked postgres.ErrDeleteBlocked
+	if errors.As(err, &blocked) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": "variante em uso",
 			"blocked_by": map[string]int{
-				"stock_items": stock,
-				"listings":    listings,
+				"stock_items": blocked.Stock,
+				"listings":    blocked.Listings,
 			},
 		})
 		return
 	}
-
-	if err := h.cards.DeleteVariant(r.Context(), id); err != nil {
+	if err != nil {
 		writeErr(w, err)
 		return
 	}

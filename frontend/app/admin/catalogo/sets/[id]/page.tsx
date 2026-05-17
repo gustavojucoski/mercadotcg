@@ -501,6 +501,10 @@ export default function EditSetPage() {
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
     if (!set) return
+    if (!name.trim()) {
+      setSaveError('Nome é obrigatório')
+      return
+    }
     setSaving(true)
     setSaveError('')
     setSaveSuccess('')
