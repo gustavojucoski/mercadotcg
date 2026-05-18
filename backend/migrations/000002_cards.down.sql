@@ -1,4 +1,0 @@
-DROP TABLE IF EXISTS card_variants;
-DROP TYPE  IF EXISTS variant_finish;
-DROP TABLE IF EXISTS cards;
-DROP TABLE IF EXISTS card_sets;
