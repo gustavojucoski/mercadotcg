@@ -156,6 +156,26 @@ func (c *Client) resolveCardURL(ctx context.Context, q scraper.Query) (string, e
 	return findBestCardLink(searchBody, c.baseURL, q.Number, q.SetCode)
 }
 
+// numParamMatches verifica se o parâmetro num= no href equivale ao número dado,
+// ignorando zero-padding (ex: "num=013" bate com number="13" e vice-versa).
+func numParamMatches(href, number string) bool {
+	if strings.Contains(href, "num="+number) {
+		return true
+	}
+	// Extrai o valor de num= e compara como inteiro para tolerar zero-padding.
+	i := strings.Index(href, "num=")
+	if i < 0 {
+		return false
+	}
+	rest := href[i+4:]
+	if end := strings.IndexAny(rest, "&# "); end >= 0 {
+		rest = rest[:end]
+	}
+	hrefNum, err1 := strconv.Atoi(rest)
+	wantNum, err2 := strconv.Atoi(number)
+	return err1 == nil && err2 == nil && hrefNum > 0 && hrefNum == wantNum
+}
+
 // findBestCardLink extrai da página de busca o link de detalhe do card mais
 // relevante.
 //
@@ -179,7 +199,7 @@ func findBestCardLink(body []byte, base, number, setCode string) (string, error)
 		if first == "" {
 			first = absoluteURL(base, href)
 		}
-		hasNum := number != "" && strings.Contains(href, "num="+number)
+		hasNum := number != "" && numParamMatches(href, number)
 		hasEd := setCode != "" && strings.Contains(href, "ed="+setCode)
 		if hasNum && hasEd && numAndEd == "" {
 			numAndEd = absoluteURL(base, href)
