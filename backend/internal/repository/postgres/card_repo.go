@@ -829,7 +829,7 @@ FROM card_sets cs
 LEFT JOIN card_series cr ON cr.id = cs.series_id
 WHERE cs.tcg = $1
   AND ($2::uuid IS NULL OR cs.series_id = $2)
-  AND ($3 = '' OR cs.code ILIKE '%' || $3 || '%' OR cs.name ILIKE '%' || $3 || '%')
+  AND ($3 = '' OR cs.code ILIKE '%' || $3 || '%' ESCAPE '\' OR cs.name ILIKE '%' || $3 || '%' ESCAPE '\')
 ORDER BY cs.release_date DESC NULLS LAST, cs.name ASC
 LIMIT $4 OFFSET $5`
 
