@@ -171,6 +171,7 @@ type resolvedCard struct {
 func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 	number := r.URL.Query().Get("number")
 	setCode := r.URL.Query().Get("set")
+	nameHint := r.URL.Query().Get("name")
 	limit := atoiOrDefault(r.URL.Query().Get("limit"), 10)
 
 	if number == "" || setCode == "" {
@@ -181,6 +182,7 @@ func (h *ExternalHandler) search(w http.ResponseWriter, r *http.Request) {
 	baseQuery := scraper.Query{
 		Number:  number,
 		SetCode: setCode,
+		Name:    nameHint, // usado como fallback; sobrescrito pelo pokemontcg.io se resolver
 		Limit:   limit,
 	}
 

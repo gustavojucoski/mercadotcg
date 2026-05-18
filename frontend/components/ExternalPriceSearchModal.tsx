@@ -36,7 +36,7 @@ export function ExternalPriceSearchModal({
     setError(null)
     setResult(null)
 
-    searchCard(collectorNumber, setCode)
+    searchCard(collectorNumber, setCode, cardName)
       .then((data) => {
         if (seq !== requestSeq.current) return
         setResult(data)
@@ -48,7 +48,7 @@ export function ExternalPriceSearchModal({
       .finally(() => {
         if (seq === requestSeq.current) setLoading(false)
       })
-  }, [collectorNumber, setCode])
+  }, [collectorNumber, setCode, cardName])
 
   useEffect(() => {
     if (!open) {
