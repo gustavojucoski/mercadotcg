@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { searchCard } from '@/lib/api'
 import { SearchResult } from '@/lib/types'
-import { Modal } from './Modal'
-import { PriceMatrix } from './PriceMatrix'
-import { GradedSection } from './GradedSection'
-import { SourceCard } from './SourceCard'
+import { Modal } from '@/components/Modal'
+import { PriceMatrix } from '@/components/PriceMatrix'
+import { GradedSection } from '@/components/GradedSection'
+import { SourceCard } from '@/components/SourceCard'
 
 interface ExternalPriceSearchModalProps {
   open: boolean

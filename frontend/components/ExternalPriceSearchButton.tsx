@@ -1,8 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import { useAuth } from './AuthProvider'
-import { ExternalPriceSearchModal } from './ExternalPriceSearchModal'
+import { useAuth } from '@/components/AuthProvider'
+import { ExternalPriceSearchModal } from '@/components/ExternalPriceSearchModal'
 
 interface ExternalPriceSearchButtonProps {
   collectorNumber: string
@@ -17,10 +17,10 @@ export function ExternalPriceSearchButton({
   cardName,
   setName,
 }: ExternalPriceSearchButtonProps) {
-  const { user, loading } = useAuth()
+  const { user } = useAuth()
   const [open, setOpen] = useState(false)
 
-  if (loading || user?.platform_role !== 'platform_admin') return null
+  if (user?.platform_role !== 'platform_admin') return null
   if (!collectorNumber || !setCode) return null
 
   return (
