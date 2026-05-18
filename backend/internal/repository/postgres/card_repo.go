@@ -829,12 +829,13 @@ FROM card_sets cs
 LEFT JOIN card_series cr ON cr.id = cs.series_id
 WHERE cs.tcg = $1
   AND ($2::uuid IS NULL OR cs.series_id = $2)
+  AND ($3 = '' OR cs.code ILIKE '%' || $3 || '%' OR cs.name ILIKE '%' || $3 || '%')
 ORDER BY cs.release_date DESC NULLS LAST, cs.name ASC
-LIMIT $3 OFFSET $4`
+LIMIT $4 OFFSET $5`
 
-// ListSetsByTCG lista sets paginados, filtrados por TCG e opcionalmente por série.
+// ListSetsByTCG lista sets paginados, filtrados por TCG, série e busca textual opcional.
 // Retorna os sets e o total de linhas (para paginação do caller).
-func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid.UUID, page, limit int) ([]SetWithSeries, int, error) {
+func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid.UUID, q string, page, limit int) ([]SetWithSeries, int, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 30
 	}
@@ -843,7 +844,7 @@ func (r *CardRepo) ListSetsByTCG(ctx context.Context, tcg string, seriesID *uuid
 	}
 	offset := (page - 1) * limit
 
-	rows, err := r.pool.Query(ctx, listSetsByTCGSQL, tcg, seriesID, limit, offset)
+	rows, err := r.pool.Query(ctx, listSetsByTCGSQL, tcg, seriesID, q, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sets by tcg: %w", err)
 	}
