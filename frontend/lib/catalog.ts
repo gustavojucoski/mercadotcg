@@ -19,13 +19,27 @@ export async function fetchSeries(tcg?: string): Promise<TCGSeries[]> {
   return res.json()
 }
 
+interface FetchSetsOptions {
+  page?: number
+  limit?: number
+  q?: string
+}
+
 export async function fetchSets(
   tcg: string,
-  page = 1,
-  limit = 30,
+  options: FetchSetsOptions = {},
 ): Promise<SetListResponse> {
-  const url = `${API}/api/v1/sets/${encodeURIComponent(tcg)}?page=${page}&limit=${limit}`
-  const res = await fetch(url, { cache: 'no-store' })
+  const { page = 1, limit = 30, q = '' } = options
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  })
+  if (q.trim()) params.set('q', q.trim())
+  const url = `${API}/api/v1/sets/${encodeURIComponent(tcg)}?${params}`
+  const res = await fetch(url, {
+    cache: q.trim() ? 'no-store' : undefined,
+    next: q.trim() ? undefined : { revalidate: 3600 },
+  })
   if (!res.ok) throw new Error(`fetchSets: HTTP ${res.status}`)
   return res.json()
 }

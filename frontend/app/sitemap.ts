@@ -26,7 +26,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   ]
 
   try {
-    const data = await fetchSets('pokemon', 1, 200)
+    const data = await fetchSets('pokemon', { page: 1, limit: 200 })
     for (const set of data.sets) {
       entries.push({
         url: `${BASE_URL}/sets/pokemon/${set.code}`,
