@@ -145,10 +145,11 @@ func (c *Client) queryCard(ctx context.Context, q string) (cardAPIBody, error) {
 
 // FindCard resolve uma carta pelo set + número da carta.
 // setCode pode ser o ptcgoCode (ex: "ASC") OU o ID do set no pokemontcg.io (ex: "sv8pt5").
-// Tenta set.ptcgoCode primeiro (admin standalone usa ptcgoCode); se não encontrar,
-// tenta set.id para compatibilidade com os códigos do catálogo interno (Scrydex).
+// Tenta set.ptcgoCode primeiro (admin standalone usa ptcgoCode); valida o match e, se não
+// bater, tenta set.id para compatibilidade com os códigos do catálogo interno (Scrydex).
+// Resultados ficam em cache por 24h sob a chave do input E do set.id canônico, evitando
+// colisão entre os dois namespaces.
 // Também resolve o TCGPlayer product ID via redirect (não-fatal se falhar).
-// Resultados ficam em cache por 24h.
 func (c *Client) FindCard(ctx context.Context, setCode, number string) (CardInfo, error) {
 	key := strings.ToUpper(setCode) + ":" + number
 
@@ -159,12 +160,18 @@ func (c *Client) FindCard(ctx context.Context, setCode, number string) (CardInfo
 	}
 	c.mu.Unlock()
 
-	// Tenta set.ptcgoCode primeiro (compatibilidade com admin standalone).
-	// Se não encontrar, tenta set.id (compatibilidade com códigos do catálogo Scrydex).
+	// Tenta set.ptcgoCode primeiro (admin standalone passa ptcgoCode).
+	// Valida que o ptcgoCode retornado bate com o input — a API Lucene pode retornar
+	// cartas de outros sets em edge cases; descartar e cair no fallback nesses casos.
 	body, err := c.queryCard(ctx, fmt.Sprintf("set.ptcgoCode:%s number:%s", setCode, number))
 	if err != nil {
 		return CardInfo{}, err
 	}
+	if len(body.Data) > 0 && !strings.EqualFold(body.Data[0].Set.PtcgoCode, setCode) {
+		body.Data = nil // match espúrio — descarta, força fallback para set.id
+	}
+
+	// Fallback set.id: códigos do catálogo Scrydex coincidem com o set.id da pokemontcg.io.
 	if len(body.Data) == 0 {
 		body, err = c.queryCard(ctx, fmt.Sprintf("set.id:%s number:%s", setCode, number))
 		if err != nil {
@@ -180,7 +187,7 @@ func (c *Client) FindCard(ctx context.Context, setCode, number string) (CardInfo
 		ID:               d.ID,
 		Name:             d.Name,
 		Number:           d.Number,
-		SetCode:          d.Set.PtcgoCode,
+		SetCode:          d.Set.PtcgoCode, // pode ser vazio para alguns sets JA
 		SetName:          d.Set.Name,
 		SetPrintedTotal:  d.Set.PrintedTotal,
 		TCGPlayerURL:     d.TCGPlayer.URL,
@@ -208,8 +215,14 @@ func (c *Client) FindCard(ctx context.Context, setCode, number string) (CardInfo
 		}
 	}
 
+	entry := cacheEntry{info: info, expiresAt: time.Now().Add(24 * time.Hour)}
 	c.mu.Lock()
-	c.cache[key] = cacheEntry{info: info, expiresAt: time.Now().Add(24 * time.Hour)}
+	c.cache[key] = entry
+	// Armazena também sob a chave canônica (set.id do pokemontcg.io extraído de d.ID)
+	// para que lookups futuros com qualquer namespace encontrem o cache.
+	if i := strings.LastIndex(d.ID, "-"); i > 0 {
+		c.cache[strings.ToUpper(d.ID[:i])+":"+number] = entry
+	}
 	c.mu.Unlock()
 
 	return info, nil
