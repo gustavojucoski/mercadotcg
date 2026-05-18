@@ -1,1 +1,0 @@
-ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_url_pt TEXT;

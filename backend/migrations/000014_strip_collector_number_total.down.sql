@@ -1,1 +1,0 @@
--- irreversível: dados originais não são preservados
