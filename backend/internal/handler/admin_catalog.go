@@ -56,6 +56,12 @@ func (h *AdminCatalogHandler) Routes(r chi.Router) {
 	// Variants
 	admin.Patch("/admin/variants/{id}", h.patchVariant)
 	admin.Delete("/admin/variants/{id}", h.deleteVariant)
+
+	// Series
+	admin.Get("/admin/series", h.listSeries)
+	admin.Post("/admin/series", h.createSeries)
+	admin.Patch("/admin/series/{id}", h.patchSeries)
+	admin.Delete("/admin/series/{id}", h.deleteSeries)
 }
 
 // ---- Audit ------------------------------------------------------------------
@@ -144,6 +150,18 @@ type patchVariantReq struct {
 
 type deleteVariantReq struct {
 	Confirm bool `json:"confirm"`
+}
+
+type createSeriesReq struct {
+	Name   string `json:"name"`
+	NamePT string `json:"name_pt,omitempty"`
+	TCG    string `json:"tcg"`
+}
+
+type patchSeriesReq struct {
+	Name   *string `json:"name,omitempty"`
+	NamePT *string `json:"name_pt,omitempty"`
+	TCG    *string `json:"tcg,omitempty"` // imutável — rejeitar com 400 se presente
 }
 
 // ---- Sets -------------------------------------------------------------------
@@ -664,6 +682,118 @@ func (h *AdminCatalogHandler) deleteVariant(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.audit(r, "delete", "variant", id.String())
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- Series -----------------------------------------------------------------
+
+// GET /admin/series?tcg=pokemon
+func (h *AdminCatalogHandler) listSeries(w http.ResponseWriter, r *http.Request) {
+	tcg := r.URL.Query().Get("tcg")
+	series, err := h.cards.ListSeries(r.Context(), tcg)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if series == nil {
+		series = []card.Series{}
+	}
+	writeJSON(w, http.StatusOK, series)
+}
+
+// POST /admin/series
+func (h *AdminCatalogHandler) createSeries(w http.ResponseWriter, r *http.Request) {
+	var req createSeriesReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	if req.Name == "" || req.TCG == "" {
+		writeBadRequest(w, "name e tcg são obrigatórios")
+		return
+	}
+
+	s := &card.Series{Name: req.Name, NamePT: req.NamePT, TCG: req.TCG}
+	if err := h.cards.CreateSeriesAdmin(r.Context(), s); err != nil {
+		if errors.Is(err, postgres.ErrAlreadyExists) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "série já existe para este TCG"})
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+
+	h.audit(r, "create", "series", s.ID.String())
+	writeJSON(w, http.StatusCreated, s)
+}
+
+// PATCH /admin/series/{id}
+func (h *AdminCatalogHandler) patchSeries(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeBadRequest(w, "id inválido")
+		return
+	}
+	var req patchSeriesReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	if req.TCG != nil {
+		writeBadRequest(w, "tcg é imutável")
+		return
+	}
+	if req.Name != nil && *req.Name == "" {
+		writeBadRequest(w, "name não pode ser vazio")
+		return
+	}
+
+	patch := postgres.SeriesPatch{Name: req.Name, NamePT: req.NamePT}
+	updated, err := h.cards.UpdateSeries(r.Context(), id, patch)
+	if err != nil {
+		if errors.Is(err, postgres.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "série não encontrada"})
+			return
+		}
+		if errors.Is(err, postgres.ErrAlreadyExists) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "série já existe para este TCG"})
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+
+	h.audit(r, "patch", "series", id.String())
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// DELETE /admin/series/{id}
+func (h *AdminCatalogHandler) deleteSeries(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeBadRequest(w, "id inválido")
+		return
+	}
+
+	err = h.cards.DeleteSeries(r.Context(), id)
+	var blocked postgres.ErrDeleteBlocked
+	if errors.As(err, &blocked) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "série possui sets vinculados",
+			"blocked_by": map[string]int{"sets_count": blocked.Sets},
+		})
+		return
+	}
+	if errors.Is(err, postgres.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "série não encontrada"})
+		return
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	h.audit(r, "delete", "series", id.String())
 	w.WriteHeader(http.StatusNoContent)
 }
 

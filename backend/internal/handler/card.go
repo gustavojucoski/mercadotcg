@@ -45,11 +45,6 @@ func (h *CardHandler) Routes(r chi.Router) {
 	r.Get("/cards/{slug}", h.getCard)
 	r.Get("/cards/{id}/variants", h.listVariants)
 
-	r.Route("/admin/series", func(r chi.Router) {
-		r.Use(h.mw.RequirePlatformAdmin)
-		r.Get("/", h.listSeries)
-		r.Patch("/{id}/name-pt", h.updateSeriesNamePT)
-	})
 	r.With(h.mw.RequirePlatformAdmin).Patch("/admin/sets/{id}/name-pt", h.updateSetNamePT)
 	r.With(h.mw.RequirePlatformAdmin).Patch("/admin/cards/{id}/name-pt", h.updateCardNamePT)
 }
@@ -230,42 +225,11 @@ func (h *CardHandler) listVariants(w http.ResponseWriter, r *http.Request) {
 }
 
 // ----------------------------------------------------------------------------
-// Admin — séries, sets e cartas (PT-BR)
+// Admin — sets e cartas (PT-BR)
 // ----------------------------------------------------------------------------
-
-func (h *CardHandler) listSeries(w http.ResponseWriter, r *http.Request) {
-	tcg := r.URL.Query().Get("tcg")
-	series, err := h.cards.ListSeries(r.Context(), tcg)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if series == nil {
-		series = []card.Series{}
-	}
-	writeJSON(w, http.StatusOK, series)
-}
 
 type updateNamePTReq struct {
 	NamePT string `json:"name_pt"`
-}
-
-func (h *CardHandler) updateSeriesNamePT(w http.ResponseWriter, r *http.Request) {
-	id, err := parseUUID(chi.URLParam(r, "id"))
-	if err != nil {
-		writeBadRequest(w, "id inválido")
-		return
-	}
-	var req updateNamePTReq
-	if err := decodeJSON(r, &req); err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	if err := h.cards.UpdateSeriesNamePT(r.Context(), id, req.NamePT); err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "name_pt atualizado"})
 }
 
 func (h *CardHandler) updateSetNamePT(w http.ResponseWriter, r *http.Request) {
