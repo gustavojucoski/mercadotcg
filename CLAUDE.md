@@ -53,7 +53,7 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 
 ## Status Atual
 
-**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'` · autocomplete suporta formato `1/217` e `/217` (PR #17) · `cards.number` removido, `collector_number` é a chave natural (PR #18).
+**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'` · autocomplete suporta formato `1/217` e `/217` (PR #17) · `cards.number` removido, `collector_number` é a chave natural (PR #18) · **admin CRUD de sets/cartas/variantes completo** (PR #19).
 
 ### Migrations
 
@@ -98,6 +98,19 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 5. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries (import_source tests já adicionados no PR #15).
 6. **Marketplace público** — listings + pagamentos (ver `docs/gaps.md`).
 
+## Admin Catálogo (PR #19 — mergeado 2026-05-18)
+
+16 endpoints `platform_admin` para CRUD de sets, cartas e variantes. ADR-029 (cascade `price_history` via `card_variants`) e ADR-031 aplicados.
+
+**Endpoints:** `GET/POST /admin/sets` · `GET/PATCH/DELETE /admin/sets/{id}` · `POST /admin/sets/{id}/image` · `GET/POST /admin/cards` · `GET/PATCH/DELETE /admin/cards/{id}` · `POST /admin/cards/{id}/image` · `GET /admin/cards/{id}/variants` · `POST /admin/cards/{cardId}/variants` · `PATCH/DELETE /admin/variants/{id}`
+
+**Padrões estabelecidos:**
+- Delete atômico com `ErrDeleteBlocked` sentinel (conta stock/listings dentro da tx).
+- PATCH dinâmico: campos `nil` não são sobrescritos; no-op guard retorna early.
+- `import_source='manual'` estampado em toda entidade editada via admin (ADR-028).
+- `lib/config.ts` centraliza `API_URL` (client) e `API_INTERNAL` (RSC/server) — único lugar a mudar.
+- `next.config.ts` proxia `/api/*` e `/uploads/*` via `API_INTERNAL_URL` (Docker interno), permitindo ngrok com um único túnel.
+
 ## Convenções Críticas
 
 **Go:**
@@ -116,7 +129,9 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 - App Router. Server component por padrão; `"use client"` só com estado/eventos/hooks.
 - Guard de auth centralizado em `app/admin/layout.tsx` — páginas filhas não duplicam.
 - Bilíngue: `<LocalizedText en={...} pt={...} />` ou `t(en, pt)` de `lib/locale.ts`. SEO sempre em EN.
-- `NEXT_PUBLIC_API_URL` via `.env.local`.
+- URL da API centralizada em `lib/config.ts` (`API_URL` para client-side, `API_INTERNAL` para RSC). Nunca redefinir localmente nos arquivos.
+- `NEXT_PUBLIC_API_URL=` (vazio) em `.env.local` e docker-compose — browser usa paths relativos proxiados pelo Next.js.
+- `next.config.ts` tem `allowedDevOrigins` para `*.ngrok-free.*` (acesso remoto em dev).
 
 **Upload:**
 - Sempre via `upload.Provider` interface. `NewFromEnv()` seleciona local vs S3.
