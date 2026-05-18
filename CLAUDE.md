@@ -59,25 +59,9 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 
 | # | Conteúdo |
 |---|---|
-| 000001 | Extensions: `pgcrypto`, `citext`, `pg_trgm` |
-| 000002 | `card_sets`, `cards`, `card_variants`, ENUM `variant_finish` |
-| 000003 | `price_history` (particionada por trimestre), `price_daily`, ENUMs pricing, trigger `updated_at` |
-| 000004 | `forex_rates`, `listings`, ENUM `listing_status` |
-| 000005 | `stores`, `stock_items`, `stock_movements`, `external_card_refs`, ENUM `stock_movement_kind` |
-| 000006 | `users`, oauth providers, email/password tokens, `refresh_tokens`, `store_members` |
-| 000007 | Seed admin: `gustavojucoski@gmail.com` / `ewq9brd5gan2dzf@FZD` |
-| 000008 | `stores` + `document_type/number/status`, `legal_name`, `verified_*` |
-| 000009 | `stores` + colunas de endereço |
-| 000010 | `store_audit_log` (JSONB) |
-| 000012 | `card_sets.tcg VARCHAR(32)` + CHECK constraint (ADR-021) |
-| 000013 | `card_series` (entidade própria); `series_id FK` em `card_sets`; `collector_number` e `name_pt` em `cards` (ADR-022) |
-| 000014 | Limpa `collector_number` — remove `"/217"` → mantém só o número |
-| 000015 | `card_sets.printed_total INTEGER` — para autocomplete de formato `"110/217"` |
-| 000016 | `card_sets.symbol_url`; `tcg='pocket'` no CHECK; índices GIN para autocomplete bilíngue |
-| 000017 | `cards.image_url_pt` — imagem PT-BR (TCG Pocket via TCGDex) |
-| 000019 | `card_sets.import_source`, `cards.import_source` VARCHAR(32) DEFAULT `'tcgdex_legacy'` (ADR-028) |
-| 000020 | CHECK constraint `'pocket'` → `'pokemon-pocket'`; migra 19 sets `tcgp-*` de `tcg='pokemon'` para `tcg='pokemon-pocket'`; recria séries Pocket com novo valor (PR #16) |
-| 000021 | Dropa `cards.number` (legado); adiciona `UNIQUE (set_id, collector_number)` como nova chave natural (PR #18) |
+| 000001 | Schema completo inicial — todas as tabelas, ENUMs, índices, triggers e seed do admin (PR #20) |
+
+> A partir do PR #20, migrations são incrementais: `000002_*.sql`, `000003_*.sql`, etc.
 
 ### Fontes de catálogo (PR #15 — ADRs 027–028)
 
