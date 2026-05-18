@@ -50,14 +50,8 @@ func (h *CardHandler) Routes(r chi.Router) {
 		r.Get("/", h.listSeries)
 		r.Patch("/{id}/name-pt", h.updateSeriesNamePT)
 	})
-	r.Route("/admin/sets", func(r chi.Router) {
-		r.Use(h.mw.RequirePlatformAdmin)
-		r.Patch("/{id}/name-pt", h.updateSetNamePT)
-	})
-	r.Route("/admin/cards", func(r chi.Router) {
-		r.Use(h.mw.RequirePlatformAdmin)
-		r.Patch("/{id}/name-pt", h.updateCardNamePT)
-	})
+	r.With(h.mw.RequirePlatformAdmin).Patch("/admin/sets/{id}/name-pt", h.updateSetNamePT)
+	r.With(h.mw.RequirePlatformAdmin).Patch("/admin/cards/{id}/name-pt", h.updateCardNamePT)
 }
 
 // ----------------------------------------------------------------------------

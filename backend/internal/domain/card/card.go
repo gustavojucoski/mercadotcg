@@ -25,7 +25,7 @@ type Set struct {
 	Code         string     `json:"code"`
 	Name         string     `json:"name"`
 	Series       string     `json:"series,omitempty"`
-	SeriesID     *uuid.UUID `json:"-"`                   // FK interna, não exposta no JSON
+	SeriesID     *uuid.UUID `json:"series_id,omitempty"`  // UUID da série; nil quando não associado
 	SeriesPT     string     `json:"series_pt,omitempty"` // nome PT-BR da série (via JOIN)
 	NamePT       string     `json:"name_pt,omitempty"`   // nome PT-BR do set
 	NameEN       string     `json:"name_en,omitempty"`   // nome EN para sets não-ingleses (ex.: JA, KO); preenchido manualmente pelo admin

@@ -5,8 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { login } from '@/lib/auth'
 import { useAuth } from '@/components/AuthProvider'
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+import { API_URL } from '@/lib/config'
 
 export default function LoginPage() {
   const router = useRouter()

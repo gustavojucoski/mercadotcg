@@ -113,6 +113,17 @@ Preço base `low` NM → LP=70%, MP=45%, HP=25%, DMG=10%.
 **Alternativas rejeitadas:** Tabela separada `import_log` (over-engineering); inferir via `external_card_refs` (indireto).
 **Revisão:** Remover após 6 meses se todos os registros forem `'scrydex'`.
 
+## ADR-031 — Cascade de séries de preços ao deletar variantes de catálogo
+**Data:** 2026-05-17 · **Status:** Aceito
+
+**Decisão:** Manter `ON DELETE CASCADE` em `price_history`, `price_daily` e `external_card_refs` quando uma `card_variant` é removida. Bloquear delete (HTTP 409) apenas quando existirem `stock_items` ou `listings` ativos apontando para a variante/carta.
+
+**Razão:** Histórico de preço e refs externas são dados derivados, reconstrutíveis a partir do scraping. Bloquear curadoria de catálogo por causa de uma série de preços de variante mal cadastrada inviabiliza correção operacional. `stock_items` e `listings` representam valor de negócio irrecuperável — apagar variante referenciada por essas tabelas seria perda de dado real.
+
+**Alternativas rejeitadas:** RESTRICT em `price_history` (bloqueia operação por dado derivado); soft-delete (complexidade em todas as queries sem requisito de "lixeira"); snapshot em tabela de arquivo (over-engineering).
+
+**Revisão:** Reabrir se houver requisito legal/fiscal de manter histórico de preço imutável, ou se volume de `price_history` por variante tornar o cascade lento o suficiente para impactar latência do endpoint de delete.
+
 ## ADR-029 — (adiado — fora de escopo desta feature)
 Alteração do ENUM `price_source` para adicionar `'scrydex'` e `'tcgdex'` foi adiada indefinidamente. O MercadoTCG é um marketplace cujos preços reais são as listagens das próprias lojas. A sincronização de preços externos (`price_history`) não é necessária agora e deve ser avaliada separadamente quando o módulo de precificação assistida for priorizado.
 

@@ -3,7 +3,7 @@
 // Refresh token: localStorage (cross-origin com Go backend na porta 8080; segurança real
 // é enforced pelo middleware RequirePlatformAdmin no backend).
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+import { API_URL } from './config'
 
 export interface AuthUser {
   id: string
