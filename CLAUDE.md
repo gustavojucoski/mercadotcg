@@ -82,16 +82,24 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 5. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries (import_source tests já adicionados no PR #15).
 6. **Marketplace público** — listings + pagamentos (ver `docs/gaps.md`).
 
-## Admin Catálogo (PR #19 — mergeado 2026-05-18)
+## Admin Catálogo (PR #19 — mergeado 2026-05-18) + Séries (PR #21 — mergeado 2026-05-18)
 
-16 endpoints `platform_admin` para CRUD de sets, cartas e variantes. ADR-029 (cascade `price_history` via `card_variants`) e ADR-031 aplicados.
+20 endpoints `platform_admin` para CRUD de sets, cartas, variantes e séries.
 
-**Endpoints:** `GET/POST /admin/sets` · `GET/PATCH/DELETE /admin/sets/{id}` · `POST /admin/sets/{id}/image` · `GET/POST /admin/cards` · `GET/PATCH/DELETE /admin/cards/{id}` · `POST /admin/cards/{id}/image` · `GET /admin/cards/{id}/variants` · `POST /admin/cards/{cardId}/variants` · `PATCH/DELETE /admin/variants/{id}`
+**Endpoints sets/cartas/variantes (PR #19):** `GET/POST /admin/sets` · `GET/PATCH/DELETE /admin/sets/{id}` · `POST /admin/sets/{id}/image` · `GET/POST /admin/cards` · `GET/PATCH/DELETE /admin/cards/{id}` · `POST /admin/cards/{id}/image` · `GET /admin/cards/{id}/variants` · `POST /admin/cards/{cardId}/variants` · `PATCH/DELETE /admin/variants/{id}`
+
+**Endpoints séries (PR #21):** `GET /admin/series` · `POST /admin/series` · `PATCH /admin/series/{id}` · `DELETE /admin/series/{id}`
+
+**Notas PR #21:**
+- `PATCH /admin/series/{id}/name-pt` removido — substituído pelo PATCH genérico.
+- `tcg` é imutável após criação (PATCH com `tcg` retorna 400).
+- Delete bloqueado via `ErrDeleteBlocked{Sets: n}` quando há `card_sets` vinculados, executado dentro de `WithTx`.
+- `card_series` não tem `import_source` — não estampar `manual` nessa entidade.
 
 **Padrões estabelecidos:**
-- Delete atômico com `ErrDeleteBlocked` sentinel (conta stock/listings dentro da tx).
+- Delete atômico com `ErrDeleteBlocked` sentinel dentro de `WithTx` (conta dependências na mesma tx).
 - PATCH dinâmico: campos `nil` não são sobrescritos; no-op guard retorna early.
-- `import_source='manual'` estampado em toda entidade editada via admin (ADR-028).
+- `import_source='manual'` estampado em sets/cards/variants editados via admin (ADR-028); não se aplica a `card_series`.
 - `lib/config.ts` centraliza `API_URL` (client) e `API_INTERNAL` (RSC/server) — único lugar a mudar.
 - `next.config.ts` proxia `/api/*` e `/uploads/*` via `API_INTERNAL_URL` (Docker interno), permitindo ngrok com um único túnel.
 
