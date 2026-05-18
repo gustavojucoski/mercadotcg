@@ -145,6 +145,7 @@ export function SiteHeader() {
                 {open === 'admin' && (
                   <div className={dropdownBase} onMouseEnter={() => openMenu('admin')} onMouseLeave={scheduleClose}>
                     {item('/admin', 'Busca Externa', pathname === '/admin')}
+                    {item('/admin/catalogo', 'Catálogo', pathname.startsWith('/admin/catalogo'))}
                     {item('/admin/lojas', 'Lojas', pathname.startsWith('/admin/lojas'))}
                   </div>
                 )}

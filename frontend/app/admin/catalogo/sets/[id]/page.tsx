@@ -451,6 +451,9 @@ export default function EditSetPage() {
   const [saveError, setSaveError] = useState('')
   const [saveSuccess, setSaveSuccess] = useState('')
 
+  // Series picker
+  const [seriesList, setSeriesList] = useState<Array<{id: string; name: string; name_pt: string}>>([])
+
   // Cards table
   const [cards, setCards] = useState<PublicCard[]>([])
   const [cardsLoading, setCardsLoading] = useState(false)
@@ -478,6 +481,15 @@ export default function EditSetPage() {
       })
       .catch(e => setLoadError(e.message))
   }, [id])
+
+  // Load series list for picker
+  useEffect(() => {
+    if (!set) return
+    fetch(`${API_URL}/api/v1/series?tcg=${encodeURIComponent(set.tcg)}`)
+      .then(r => r.json())
+      .then((data: Array<{id: string; name: string; name_pt: string}>) => setSeriesList(data))
+      .catch(() => {})
+  }, [set])
 
   // Load cards (public endpoint)
   useEffect(() => {
@@ -595,7 +607,10 @@ export default function EditSetPage() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{set.name}</h1>
-              <p className="text-xs text-zinc-400 font-mono mt-0.5">{set.tcg} &middot; {set.code}</p>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                {set.tcg} · {set.code}
+                {set.series && <span className="font-normal"> · {set.series}</span>}
+              </p>
             </div>
             <button
               type="button"
@@ -643,14 +658,19 @@ export default function EditSetPage() {
                   />
                 </div>
                 <div>
-                  <label className={labelCls}>ID da Serie</label>
-                  <input
-                    type="text"
+                  <label className={labelCls}>Série</label>
+                  <select
                     value={seriesId}
                     onChange={e => setSeriesId(e.target.value)}
-                    className={`${inputCls} font-mono text-xs`}
-                    placeholder="UUID"
-                  />
+                    className={inputCls}
+                  >
+                    <option value="">— Sem série —</option>
+                    {seriesList.map(s => (
+                      <option key={s.id} value={s.id}>
+                        {s.name_pt ? `${s.name} / ${s.name_pt}` : s.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className={labelCls}>Data de lancamento</label>

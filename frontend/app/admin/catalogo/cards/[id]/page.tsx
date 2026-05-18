@@ -16,6 +16,7 @@ import {
   CatalogCard,
   CatalogVariant,
 } from '@/lib/catalog-admin'
+import { FINISH_LABEL } from '@/lib/variants'
 
 // ── Style tokens ───────────────────────────────────────────────────────────
 
@@ -202,11 +203,12 @@ function CardImageUpload({ label, currentUrl, slot, cardId, onUploaded }: CardIm
 
 interface VariantRowProps {
   variant: CatalogVariant
+  existingLabels: string[]
   onUpdated: (v: CatalogVariant) => void
   onDeleted: (id: string) => void
 }
 
-function VariantRow({ variant, onUpdated, onDeleted }: VariantRowProps) {
+function VariantRow({ variant, existingLabels, onUpdated, onDeleted }: VariantRowProps) {
   const [editing, setEditing] = useState(false)
   const [finish, setFinish] = useState(variant.finish)
   const [label, setLabel] = useState(variant.label)
@@ -262,20 +264,29 @@ function VariantRow({ variant, onUpdated, onDeleted }: VariantRowProps) {
       {editing ? (
         <tr className="bg-violet-50/50 dark:bg-violet-900/10">
           <td className="px-4 py-2.5">
-            <input
-              type="text"
+            <select
               value={finish}
               onChange={e => setFinish(e.target.value)}
-              className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-violet-500"
-            />
+              className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
+            >
+              {Object.entries(FINISH_LABEL).map(([value, label_]) => (
+                <option key={value} value={value}>{label_}</option>
+              ))}
+            </select>
           </td>
           <td className="px-4 py-2.5">
-            <input
-              type="text"
-              value={label}
-              onChange={e => setLabel(e.target.value)}
-              className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
-            />
+            <>
+              <input
+                type="text"
+                list="label-suggestions"
+                value={label}
+                onChange={e => setLabel(e.target.value)}
+                className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
+              />
+              <datalist id="label-suggestions">
+                {existingLabels.map(l => <option key={l} value={l} />)}
+              </datalist>
+            </>
           </td>
           <td className="px-4 py-2.5 text-center">
             <input
@@ -374,10 +385,11 @@ function VariantRow({ variant, onUpdated, onDeleted }: VariantRowProps) {
 
 interface NewVariantRowProps {
   cardId: string
+  existingLabels: string[]
   onCreated: (v: CatalogVariant) => void
 }
 
-function NewVariantRow({ cardId, onCreated }: NewVariantRowProps) {
+function NewVariantRow({ cardId, existingLabels, onCreated }: NewVariantRowProps) {
   const [finish, setFinish] = useState('')
   const [label, setLabel] = useState('')
   const [isPromo, setIsPromo] = useState(false)
@@ -412,23 +424,31 @@ function NewVariantRow({ cardId, onCreated }: NewVariantRowProps) {
   return (
     <tr className="bg-zinc-50/80 dark:bg-zinc-800/30">
       <td className="px-4 py-2.5">
-        <input
-          type="text"
+        <select
           value={finish}
           onChange={e => setFinish(e.target.value)}
-          placeholder="ex: holo"
-          className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-violet-500"
-          required
-        />
+          className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
+        >
+          <option value="">— Escolha —</option>
+          {Object.entries(FINISH_LABEL).map(([value, label_]) => (
+            <option key={value} value={value}>{label_}</option>
+          ))}
+        </select>
       </td>
       <td className="px-4 py-2.5">
-        <input
-          type="text"
-          value={label}
-          onChange={e => setLabel(e.target.value)}
-          placeholder="Label display"
-          className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
-        />
+        <>
+          <input
+            type="text"
+            list="label-suggestions-new"
+            value={label}
+            onChange={e => setLabel(e.target.value)}
+            placeholder="Label display"
+            className="w-full rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
+          />
+          <datalist id="label-suggestions-new">
+            {existingLabels.map(l => <option key={l} value={l} />)}
+          </datalist>
+        </>
       </td>
       <td className="px-4 py-2.5 text-center">
         <input
@@ -583,6 +603,8 @@ export default function EditCardPage() {
       setDeleting(false)
     }
   }
+
+  const existingLabels = [...new Set(variants.map(v => v.label).filter(Boolean))] as string[]
 
   if (loadError) {
     return (
@@ -812,6 +834,7 @@ export default function EditCardPage() {
                       <VariantRow
                         key={v.id}
                         variant={v}
+                        existingLabels={existingLabels}
                         onUpdated={updated =>
                           setVariants(prev => prev.map(x => x.id === updated.id ? updated : x))
                         }
@@ -823,6 +846,7 @@ export default function EditCardPage() {
                     {/* New variant row */}
                     <NewVariantRow
                       cardId={card.id}
+                      existingLabels={existingLabels}
                       onCreated={v => setVariants(prev => [...prev, v])}
                     />
                   </tbody>
