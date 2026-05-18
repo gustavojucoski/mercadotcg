@@ -303,8 +303,8 @@ func (h *CardHandler) listSetsByTCG(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := strings.TrimSpace(qs.Get("q"))
-	if len(q) > 80 {
-		q = q[:80]
+	if runes := []rune(q); len(runes) > 80 {
+		q = string(runes[:80])
 	}
 	q = escapeLikePattern(q)
 
