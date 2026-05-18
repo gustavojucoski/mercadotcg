@@ -472,7 +472,6 @@ func seedSetAndCard(
 
 	c := card.Card{
 		SetID:           setID,
-		Number:          cardNumber,
 		CollectorNumber: cardNumber,
 		Name:            "Pikachu Test " + cardNumber,
 	}

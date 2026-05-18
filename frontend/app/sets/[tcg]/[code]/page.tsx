@@ -19,7 +19,7 @@ interface Props {
 
 export async function generateStaticParams() {
   try {
-    const data = await fetchSets('pokemon', 1, 20)
+    const data = await fetchSets('pokemon', { page: 1, limit: 20 })
     return data.sets.map(s => ({ tcg: 'pokemon', code: s.code }))
   } catch {
     return []

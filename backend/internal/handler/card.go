@@ -287,13 +287,13 @@ func (h *CardHandler) listSeriesPublic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, series)
 }
 
-// GET /sets/{tcg}?series_id=&page=1&limit=30
+// GET /sets/{tcg}?series_id=&q=&page=1&limit=30
 func (h *CardHandler) listSetsByTCG(w http.ResponseWriter, r *http.Request) {
 	tcg := chi.URLParam(r, "tcg")
-	q := r.URL.Query()
+	qs := r.URL.Query()
 
 	var seriesID *uuid.UUID
-	if raw := q.Get("series_id"); raw != "" {
+	if raw := qs.Get("series_id"); raw != "" {
 		id, err := parseUUID(raw)
 		if err != nil {
 			writeBadRequest(w, "series_id inválido")
@@ -302,13 +302,19 @@ func (h *CardHandler) listSetsByTCG(w http.ResponseWriter, r *http.Request) {
 		seriesID = &id
 	}
 
-	page := atoiOrDefault(q.Get("page"), 1)
-	limit := atoiOrDefault(q.Get("limit"), 30)
+	q := strings.TrimSpace(qs.Get("q"))
+	if runes := []rune(q); len(runes) > 80 {
+		q = string(runes[:80])
+	}
+	q = escapeLikePattern(q)
+
+	page := atoiOrDefault(qs.Get("page"), 1)
+	limit := atoiOrDefault(qs.Get("limit"), 30)
 	if limit > 500 {
 		limit = 500
 	}
 
-	sets, total, err := h.cards.ListSetsByTCG(r.Context(), tcg, seriesID, page, limit)
+	sets, total, err := h.cards.ListSetsByTCG(r.Context(), tcg, seriesID, q, page, limit)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -317,7 +323,11 @@ func (h *CardHandler) listSetsByTCG(w http.ResponseWriter, r *http.Request) {
 		sets = []postgres.SetWithSeries{}
 	}
 
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	if q != "" {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tcg":   tcg,
 		"total": total,
@@ -325,6 +335,13 @@ func (h *CardHandler) listSetsByTCG(w http.ResponseWriter, r *http.Request) {
 		"limit": limit,
 		"sets":  sets,
 	})
+}
+
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 // GET /sets/{tcg}/{code}
