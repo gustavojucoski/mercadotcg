@@ -331,7 +331,7 @@ export async function deleteAdminVariant(id: string): Promise<void> {
 export interface CatalogSeries {
   id: string
   name: string
-  name_pt: string
+  name_pt?: string
   tcg: string
   created_at: string
 }

@@ -671,34 +671,36 @@ func (r *CardRepo) UpdateSeries(ctx context.Context, id uuid.UUID, p SeriesPatch
 	return r.GetSeriesByID(ctx, id)
 }
 
-// DeleteSeries apaga uma série pelo UUID.
+// DeleteSeries apaga uma série pelo UUID dentro de uma transação.
 // Retorna ErrNotFound se não existir.
 // Retorna ErrDeleteBlocked{Sets: n} se houver sets vinculados.
 func (r *CardRepo) DeleteSeries(ctx context.Context, id uuid.UUID) error {
-	// Verificar existência.
-	var exists uuid.UUID
-	err := r.pool.QueryRow(ctx, `SELECT id FROM card_series WHERE id = $1`, id).Scan(&exists)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("check series exists: %w", err)
-	}
+	return r.WithTx(ctx, func(tx pgx.Tx) error {
+		// Verificar existência dentro da tx.
+		var exists uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT id FROM card_series WHERE id = $1`, id).Scan(&exists)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("check series exists: %w", err)
+		}
 
-	// Contar sets vinculados.
-	var count int64
-	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM card_sets WHERE series_id = $1`, id).Scan(&count); err != nil {
-		return fmt.Errorf("count sets for series: %w", err)
-	}
-	if count > 0 {
-		return ErrDeleteBlocked{Sets: int(count)}
-	}
+		// Contar sets vinculados dentro da mesma tx.
+		var count int64
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM card_sets WHERE series_id = $1`, id).Scan(&count); err != nil {
+			return fmt.Errorf("count sets for series: %w", err)
+		}
+		if count > 0 {
+			return ErrDeleteBlocked{Sets: int(count)}
+		}
 
-	_, err = r.pool.Exec(ctx, `DELETE FROM card_series WHERE id = $1`, id)
-	if err != nil {
-		return fmt.Errorf("delete series: %w", err)
-	}
-	return nil
+		_, err = tx.Exec(ctx, `DELETE FROM card_series WHERE id = $1`, id)
+		if err != nil {
+			return fmt.Errorf("delete series: %w", err)
+		}
+		return nil
+	})
 }
 
 // ---- Listagem filtrada para admin -------------------------------------------
