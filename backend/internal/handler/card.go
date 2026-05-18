@@ -425,11 +425,12 @@ type variantWithPrice struct {
 
 // getCardBySlug é chamado por getCard quando o parâmetro não é um UUID.
 // Formato do slug: "{setCode}-{collectorNumber}".
-// Collector numbers podem conter hífens (ex: "TG01-EN") — split apenas no PRIMEIRO hífen.
+// Set codes podem conter hífens (ex: "tcgp-A1"); collector numbers nunca têm hífen.
+// Por isso, split no ÚLTIMO hífen.
 func (h *CardHandler) getCardBySlug(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 
-	idx := strings.Index(slug, "-")
+	idx := strings.LastIndex(slug, "-")
 	if idx < 0 {
 		writeBadRequest(w, "slug inválido — formato esperado: {set}-{número}")
 		return
