@@ -53,7 +53,7 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 
 ## Status Atual
 
-**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'` · autocomplete suporta formato `1/217` e `/217` (PR #17) · `cards.number` removido, `collector_number` é a chave natural (PR #18) · **admin CRUD de sets/cartas/variantes completo** (PR #19).
+**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'` · autocomplete suporta formato `1/217` e `/217` (PR #17) · `cards.number` removido, `collector_number` é a chave natural (PR #18) · **admin CRUD de sets/cartas/variantes completo** (PR #19) · **busca server-side + infinite scroll em `/sets/[tcg]`** (PR #22).
 
 ### Migrations
 
@@ -79,8 +79,22 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 2. **Remover remotePatterns de transição** — `assets.tcgdex.net` e `images.pokemontcg.io` em `next.config.ts` após confirmar que tudo aponta para o S3 próprio.
 3. **Frontend estoque de singles** — `/lojas/[id]/singles` com seleção de cartas via API de catálogo.
 4. **Frontend estoque de selados** — `/lojas/[id]/selados`.
-5. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries (import_source tests já adicionados no PR #15).
+5. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries (import_source tests já adicionados no PR #15; ListSetsByTCG coberto no PR #22).
 6. **Marketplace público** — listings + pagamentos (ver `docs/gaps.md`).
+
+## Busca Server-Side + Infinite Scroll em /sets/[tcg] (PR #22 — mergeado 2026-05-18)
+
+**Problema corrigido:** sets vintage (Base Set, Fossil, Neo) ficavam invisíveis — listagem carregava 200 sets em `release_date DESC` e filtrava no client-side.
+
+**Backend:** parâmetro `q` opcional no `GET /sets/{tcg}` público. ILIKE em `code` e `name` com `ESCAPE '\'` explícito. `escapeLikePattern` (handler) escapa `%`, `_`, `\` antes de passar ao repo. Truncagem de `q` em runes (UTF-8 safe, max 80). Cache-Control `max-age=3600` sem `q`, `max-age=60` com `q`.
+
+**Frontend:** `SetBrowser` (`'use client'`) substitui `SetFilter`. SSR da primeira página (`limit=24`) via `searchParams.q`. Debounce 300ms → busca no backend. IntersectionObserver + botão "Carregar mais". URL sync via `router.replace`. `requestSeq` ref para descartar respostas obsoletas. `robots: noindex` quando `q` presente.
+
+**Padrões estabelecidos:**
+- `ESCAPE '\'` obrigatório em toda cláusula ILIKE que aceita input do usuário.
+- `escapeLikePattern` no handler, nunca no repo (separação de responsabilidades).
+- Client Components que fazem fetch usam `API_URL` (não `API_INTERNAL`).
+- Truncagem de strings com `[]rune(s)[:n]`, nunca `s[:n]` em bytes.
 
 ## Admin Catálogo (PR #19 — mergeado 2026-05-18) + Séries (PR #21 — mergeado 2026-05-18)
 
