@@ -4,6 +4,7 @@ import { SiteHeader } from '@/components/SiteHeader'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { VariantTabs } from '@/components/VariantTabs'
 import { LocalizedText } from '@/components/LocalizedText'
+import { ExternalPriceSearchButton } from '@/components/ExternalPriceSearchButton'
 import { fetchCard } from '@/lib/catalog'
 import { finishLabel } from '@/lib/variants'
 
@@ -132,9 +133,17 @@ export default async function CardDetailPage({ params }: Props) {
             )}
 
             <div className="mt-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5">
-              <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4 uppercase tracking-wide">
-                Informações da carta
-              </h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wide">
+                  Informações da carta
+                </h2>
+                <ExternalPriceSearchButton
+                  collectorNumber={card.collector_number}
+                  setCode={set.code}
+                  cardName={cardNameEn}
+                  setName={setNameEn}
+                />
+              </div>
               <dl className="space-y-3">
                 <div className="flex items-start gap-2">
                   <dt className="w-32 shrink-0 text-sm text-zinc-400">Set</dt>
