@@ -157,47 +157,43 @@ func (c *Client) resolveCardURL(ctx context.Context, q scraper.Query) (string, e
 }
 
 // findBestCardLink extrai da página de busca o link de detalhe do card mais
-// relevante. Prefere o link que bate com num + ed; cai no primeiro link se
-// não houver filtros.
+// relevante.
+//
+// Precedência:
+//  1. num + ed ambos batem (match perfeito)
+//  2. apenas num bate (edition code do LigaPokemon difere do nosso código Scrydex)
+//  3. apenas ed bate
+//  4. primeiro link da página (pior caso)
 func findBestCardLink(body []byte, base, number, setCode string) (string, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
 	if err != nil {
 		return "", fmt.Errorf("parse html: %w", err)
 	}
 
-	var first, exact string
+	var first, numAndEd, numOnly, edOnly string
 	doc.Find("a[href*='view=cards/card']").Each(func(_ int, s *goquery.Selection) {
 		href, exists := s.Attr("href")
 		if !exists || href == "" {
 			return
 		}
-		// Guarda o primeiro link encontrado como fallback.
 		if first == "" {
 			first = absoluteURL(base, href)
 		}
-		// Tenta match exato por num + ed.
-		if number != "" && setCode != "" {
-			if strings.Contains(href, "num="+number) && strings.Contains(href, "ed="+setCode) {
-				if exact == "" {
-					exact = absoluteURL(base, href)
-				}
-			}
-		} else if number != "" {
-			if strings.Contains(href, "num="+number) && exact == "" {
-				exact = absoluteURL(base, href)
-			}
-		} else if setCode != "" {
-			if strings.Contains(href, "ed="+setCode) && exact == "" {
-				exact = absoluteURL(base, href)
-			}
+		hasNum := number != "" && strings.Contains(href, "num="+number)
+		hasEd := setCode != "" && strings.Contains(href, "ed="+setCode)
+		if hasNum && hasEd && numAndEd == "" {
+			numAndEd = absoluteURL(base, href)
+		} else if hasNum && numOnly == "" {
+			numOnly = absoluteURL(base, href)
+		} else if hasEd && edOnly == "" {
+			edOnly = absoluteURL(base, href)
 		}
 	})
 
-	if exact != "" {
-		return exact, nil
-	}
-	if first != "" {
-		return first, nil
+	for _, candidate := range []string{numAndEd, numOnly, edOnly, first} {
+		if candidate != "" {
+			return candidate, nil
+		}
 	}
 	return "", errors.New("nenhum card encontrado na busca")
 }
