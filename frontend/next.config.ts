@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ['*.ngrok-free.app', '*.ngrok-free.dev', '*.ngrok.io'],
+  async rewrites() {
+    const target = process.env.API_INTERNAL_URL || 'http://localhost:8080'
+    return [
+      { source: '/api/:path*',     destination: `${target}/api/:path*` },
+      { source: '/uploads/:path*', destination: `${target}/uploads/:path*` },
+    ]
+  },
   images: {
     remotePatterns: [
       // Storage interno — dev (Go backend local)

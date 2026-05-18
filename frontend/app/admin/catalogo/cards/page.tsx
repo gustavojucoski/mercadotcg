@@ -3,8 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { authedFetch } from '@/lib/api'
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+import { API_URL } from '@/lib/config'
 
 interface AutocompleteCard {
   id: string

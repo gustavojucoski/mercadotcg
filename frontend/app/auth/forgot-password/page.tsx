@@ -2,8 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+import { API_URL } from '@/lib/config'
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('')

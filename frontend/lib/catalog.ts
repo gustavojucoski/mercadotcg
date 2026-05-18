@@ -8,12 +8,7 @@ import type {
   TCGSet,
 } from './types'
 
-// API_INTERNAL_URL é definida apenas server-side (sem NEXT_PUBLIC) e aponta para
-// o hostname interno do Docker. No browser, cai no NEXT_PUBLIC_API_URL (URL pública).
-const API =
-  process.env.API_INTERNAL_URL ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  'http://localhost:8080'
+import { API_INTERNAL as API } from './config'
 
 export async function fetchSeries(tcg?: string): Promise<TCGSeries[]> {
   const url = tcg

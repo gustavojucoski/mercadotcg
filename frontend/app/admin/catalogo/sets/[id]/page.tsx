@@ -12,9 +12,7 @@ import {
   ConflictDeleteError,
   CatalogSet,
 } from '@/lib/catalog-admin'
-
-// Public endpoint for cards-in-set is fetched without auth
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+import { API_URL } from '@/lib/config'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

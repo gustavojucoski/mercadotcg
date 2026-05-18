@@ -1,7 +1,6 @@
 import { SearchResult } from './types'
 import { getAccessToken, refreshAccessToken } from './auth'
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+import { API_URL } from './config'
 
 // authedFetch injeta o access token e faz retry automático em 401 via refresh.
 export async function authedFetch(url: string, init?: RequestInit): Promise<Response> {
