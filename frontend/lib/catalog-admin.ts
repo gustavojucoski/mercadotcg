@@ -326,6 +326,75 @@ export async function deleteAdminVariant(id: string): Promise<void> {
   }
 }
 
+// ── Series ────────────────────────────────────────────────────────────────────
+
+export interface CatalogSeries {
+  id: string
+  name: string
+  name_pt: string
+  tcg: string
+  created_at: string
+}
+
+export async function fetchAdminSeries(tcg: string): Promise<CatalogSeries[]> {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/series?tcg=${encodeURIComponent(tcg)}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error((body as { error?: string }).error || `Erro ao listar series: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function createAdminSeries(body: {
+  name: string
+  name_pt?: string
+  tcg: string
+}): Promise<CatalogSeries> {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/series`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const parsed = await res.json().catch(() => ({}))
+    throw new Error((parsed as { error?: string }).error || `Erro ao criar série: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function patchAdminSeries(
+  id: string,
+  body: { name?: string; name_pt?: string },
+): Promise<CatalogSeries> {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/series/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const parsed = await res.json().catch(() => ({}))
+    throw new Error((parsed as { error?: string }).error || `Erro ao atualizar série: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteAdminSeries(id: string): Promise<void> {
+  const res = await authedFetch(`${API_URL}/api/v1/admin/series/${id}`, {
+    method: 'DELETE',
+  })
+  if (res.status === 409) {
+    const parsed = await res.json().catch(() => ({}))
+    throw new ConflictDeleteError(
+      (parsed as ConflictError).error || 'Conflito ao deletar série',
+      (parsed as ConflictError).blocked_by || {},
+    )
+  }
+  if (!res.ok) {
+    const parsed = await res.json().catch(() => ({}))
+    throw new Error((parsed as { error?: string }).error || `Erro ao deletar série: ${res.status}`)
+  }
+}
+
 // ── ConflictDeleteError ───────────────────────────────────────────────────────
 
 export class ConflictDeleteError extends Error {
