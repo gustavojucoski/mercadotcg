@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { searchCard } from '@/lib/api'
 import { SearchResult } from '@/lib/types'
 import { Modal } from './Modal'
@@ -30,52 +30,40 @@ export function ExternalPriceSearchModal({
   const [result, setResult] = useState<SearchResult | null>(null)
   const requestSeq = useRef(0)
 
+  const runSearch = useCallback(() => {
+    const seq = ++requestSeq.current
+    setLoading(true)
+    setError(null)
+    setResult(null)
+
+    searchCard(collectorNumber, setCode)
+      .then((data) => {
+        if (seq !== requestSeq.current) return
+        setResult(data)
+      })
+      .catch((e) => {
+        if (seq !== requestSeq.current) return
+        setError(e instanceof Error ? e.message : 'Erro desconhecido')
+      })
+      .finally(() => {
+        if (seq === requestSeq.current) setLoading(false)
+      })
+  }, [collectorNumber, setCode])
+
   useEffect(() => {
     if (!open) {
+      // Invalidate any in-flight request before resetting state
+      requestSeq.current++
       setLoading(false)
       setError(null)
       setResult(null)
       return
     }
 
-    const seq = ++requestSeq.current
-    setLoading(true)
-    setError(null)
-    setResult(null)
-
-    searchCard(collectorNumber, setCode)
-      .then((data) => {
-        if (seq !== requestSeq.current) return
-        setResult(data)
-      })
-      .catch((e) => {
-        if (seq !== requestSeq.current) return
-        setError(e instanceof Error ? e.message : 'Erro desconhecido')
-      })
-      .finally(() => {
-        if (seq === requestSeq.current) setLoading(false)
-      })
-  }, [open, collectorNumber, setCode])
-
-  function handleRetry() {
-    const seq = ++requestSeq.current
-    setLoading(true)
-    setError(null)
-    setResult(null)
-
-    searchCard(collectorNumber, setCode)
-      .then((data) => {
-        if (seq !== requestSeq.current) return
-        setResult(data)
-      })
-      .catch((e) => {
-        if (seq !== requestSeq.current) return
-        setError(e instanceof Error ? e.message : 'Erro desconhecido')
-      })
-      .finally(() => {
-        if (seq === requestSeq.current) setLoading(false)
-      })
-  }
+    runSearch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // cardName/setName are display-only — changes don't require a new search
+  }, [open, runSearch])
 
   return (
     <Modal open={open} onClose={onClose} title="Preços Externos">
@@ -104,7 +92,7 @@ export function ExternalPriceSearchModal({
             <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
             <button
               type="button"
-              onClick={handleRetry}
+              onClick={runSearch}
               className="mt-3 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50 dark:border-red-800 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950/30"
             >
               Tentar novamente

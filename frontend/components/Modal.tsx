@@ -1,6 +1,6 @@
 'use client'
 
-import { ReactNode, useEffect, useRef, useState } from 'react'
+import { ReactNode, useEffect, useId, useRef } from 'react'
 import { createPortal } from 'react-dom'
 
 const SIZE_CLASSES = {
@@ -18,12 +18,8 @@ interface ModalProps {
 }
 
 export function Modal({ open, onClose, title, children, size = 'xl' }: ModalProps) {
-  const [mounted, setMounted] = useState(false)
+  const titleId = useId()
   const closeButtonRef = useRef<HTMLButtonElement>(null)
-
-  useEffect(() => {
-    setMounted(true)
-  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -43,14 +39,15 @@ export function Modal({ open, onClose, title, children, size = 'xl' }: ModalProp
     }
   }, [open, onClose])
 
-  if (!mounted || !open) return null
+  if (!open) return null
+  if (typeof document === 'undefined') return null
 
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="modal-title"
+      aria-labelledby={titleId}
     >
       <div
         className="absolute inset-0 bg-black/50"
@@ -64,7 +61,7 @@ export function Modal({ open, onClose, title, children, size = 'xl' }: ModalProp
       >
         <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
           <h2
-            id="modal-title"
+            id={titleId}
             className="text-base font-semibold text-zinc-900 dark:text-zinc-50"
           >
             {title}
