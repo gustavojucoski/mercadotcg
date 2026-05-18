@@ -46,6 +46,12 @@ type VariantPatch struct {
 	Notes   *string
 }
 
+// SeriesPatch contém campos editáveis de uma série via PATCH admin. Nil = não alterar.
+type SeriesPatch struct {
+	Name   *string
+	NamePT *string
+}
+
 // ---- Reads por UUID ---------------------------------------------------------
 
 const selectSetByIDSQL = `
@@ -364,10 +370,11 @@ func (r *CardRepo) UpdateVariant(ctx context.Context, id uuid.UUID, p VariantPat
 type ErrDeleteBlocked struct {
 	Stock    int
 	Listings int
+	Sets     int
 }
 
 func (e ErrDeleteBlocked) Error() string {
-	return fmt.Sprintf("delete blocked: %d stock, %d listings", e.Stock, e.Listings)
+	return fmt.Sprintf("delete blocked: %d stock, %d listings, %d sets", e.Stock, e.Listings, e.Sets)
 }
 
 // WithTx executa fn dentro de uma transação. Faz rollback automaticamente em caso de erro.
@@ -588,6 +595,110 @@ func (r *CardRepo) CountCardsWithActiveListingsInSet(ctx context.Context, setID 
 		return 0, fmt.Errorf("count cards with active listings in set: %w", err)
 	}
 	return n, nil
+}
+
+// ---- Series admin -----------------------------------------------------------
+
+// GetSeriesByID busca uma série pelo seu UUID.
+func (r *CardRepo) GetSeriesByID(ctx context.Context, id uuid.UUID) (card.Series, error) {
+	const q = `SELECT id, name, COALESCE(name_pt, ''), tcg, created_at FROM card_series WHERE id = $1`
+	var s card.Series
+	err := r.pool.QueryRow(ctx, q, id).Scan(&s.ID, &s.Name, &s.NamePT, &s.TCG, &s.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return card.Series{}, ErrNotFound
+	}
+	if err != nil {
+		return card.Series{}, fmt.Errorf("get series by id: %w", err)
+	}
+	return s, nil
+}
+
+// CreateSeriesAdmin insere uma série marcada via admin.
+// Retorna ErrAlreadyExists se (name, tcg) já existir.
+// Preenche s.ID e s.CreatedAt com os valores retornados pelo RETURNING.
+func (r *CardRepo) CreateSeriesAdmin(ctx context.Context, s *card.Series) error {
+	const q = `
+	INSERT INTO card_series (name, name_pt, tcg)
+	VALUES ($1, NULLIF($2, ''), $3)
+	RETURNING id, created_at`
+
+	err := r.pool.QueryRow(ctx, q, s.Name, s.NamePT, s.TCG).Scan(&s.ID, &s.CreatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == PgUniqueViolation {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("create series admin: %w", err)
+	}
+	return nil
+}
+
+// UpdateSeries aplica um patch parcial em uma série. Campos nil são preservados.
+func (r *CardRepo) UpdateSeries(ctx context.Context, id uuid.UUID, p SeriesPatch) (card.Series, error) {
+	if p.Name == nil && p.NamePT == nil {
+		return r.GetSeriesByID(ctx, id)
+	}
+
+	setClauses := []string{}
+	args := []any{id}
+	i := 2
+
+	if p.Name != nil {
+		setClauses = append(setClauses, fmt.Sprintf("name = $%d", i))
+		args = append(args, *p.Name)
+		i++
+	}
+	if p.NamePT != nil {
+		// NULLIF aceita string vazia como "limpar o campo" (define NULL no banco).
+		setClauses = append(setClauses, fmt.Sprintf("name_pt = NULLIF($%d, '')", i))
+		args = append(args, *p.NamePT)
+		i++
+	}
+	_ = i
+
+	q := fmt.Sprintf("UPDATE card_series SET %s WHERE id = $1", strings.Join(setClauses, ", "))
+	tag, err := r.pool.Exec(ctx, q, args...)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == PgUniqueViolation {
+			return card.Series{}, ErrAlreadyExists
+		}
+		return card.Series{}, fmt.Errorf("update series: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return card.Series{}, ErrNotFound
+	}
+	return r.GetSeriesByID(ctx, id)
+}
+
+// DeleteSeries apaga uma série pelo UUID.
+// Retorna ErrNotFound se não existir.
+// Retorna ErrDeleteBlocked{Sets: n} se houver sets vinculados.
+func (r *CardRepo) DeleteSeries(ctx context.Context, id uuid.UUID) error {
+	// Verificar existência.
+	var exists uuid.UUID
+	err := r.pool.QueryRow(ctx, `SELECT id FROM card_series WHERE id = $1`, id).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("check series exists: %w", err)
+	}
+
+	// Contar sets vinculados.
+	var count int64
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM card_sets WHERE series_id = $1`, id).Scan(&count); err != nil {
+		return fmt.Errorf("count sets for series: %w", err)
+	}
+	if count > 0 {
+		return ErrDeleteBlocked{Sets: int(count)}
+	}
+
+	_, err = r.pool.Exec(ctx, `DELETE FROM card_series WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete series: %w", err)
+	}
+	return nil
 }
 
 // ---- Listagem filtrada para admin -------------------------------------------

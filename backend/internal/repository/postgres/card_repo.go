@@ -262,20 +262,6 @@ func (r *CardRepo) UpsertSeriesWithPT(ctx context.Context, name, namePT, tcg str
 	return s, nil
 }
 
-const updateSeriesNamePTSQL = `
-UPDATE card_series SET name_pt = $2 WHERE id = $1`
-
-// UpdateSeriesNamePT atualiza a tradução PT-BR de uma série.
-func (r *CardRepo) UpdateSeriesNamePT(ctx context.Context, id uuid.UUID, namePT string) error {
-	tag, err := r.pool.Exec(ctx, updateSeriesNamePTSQL, id, namePT)
-	if err != nil {
-		return fmt.Errorf("update series name_pt: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
 
 const listSeriesSQL = `
 SELECT id, name, COALESCE(name_pt, ''), tcg, created_at
