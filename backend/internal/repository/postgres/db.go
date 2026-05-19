@@ -18,6 +18,10 @@ var (
 	ErrNotFound              = errors.New("postgres: registro não encontrado")
 	ErrAlreadyExists         = errors.New("postgres: registro já existe")
 	ErrDocumentAlreadyExists = errors.New("postgres: já existe uma loja com este CPF/CNPJ")
+	// ErrSearchOffsetTooDeep is returned when the requested page would require an
+	// offset greater than 1000, which would cause a full table scan and degrade
+	// performance. Callers should redirect users to narrow their search instead.
+	ErrSearchOffsetTooDeep = errors.New("search: offset too deep")
 )
 
 // PgUniqueViolation é o SQLSTATE retornado pelo Postgres quando uma UNIQUE

@@ -33,6 +33,7 @@ func (h *CardHandler) Routes(r chi.Router) {
 	// Rotas existentes.
 	r.Get("/cards/search", h.search)
 	r.Get("/cards/lookup", h.lookup)
+	r.Get("/search/cards", h.searchCards)
 	// Rotas públicas de catálogo — sem autenticação.
 	r.Get("/series", h.listSeriesPublic)
 	r.Get("/sets/{tcg}", h.listSetsByTCG)
@@ -451,4 +452,101 @@ type variantWithPrice struct {
 	Label        string                 `json:"label,omitempty"`
 	IsPromo      bool                   `json:"is_promo"`
 	PriceSummary *postgres.PriceSummary `json:"price_summary"`
+}
+
+// ----------------------------------------------------------------------------
+// GET /search/cards?q=&sort=name&order=asc&tcg=&rarity=&lang=en&page=1&limit=24
+// ----------------------------------------------------------------------------
+
+type searchCardsResponse struct {
+	Data    []postgres.SearchCardResult `json:"data"`
+	Total   int                         `json:"total"`
+	Page    int                         `json:"page"`
+	Limit   int                         `json:"limit"`
+	HasMore bool                        `json:"has_more"`
+}
+
+func (h *CardHandler) searchCards(w http.ResponseWriter, r *http.Request) {
+	qs := r.URL.Query()
+
+	q := strings.TrimSpace(qs.Get("q"))
+	if runes := []rune(q); len(runes) > 80 {
+		q = string(runes[:80])
+	}
+	q = escapeLikePattern(q)
+
+	sort := qs.Get("sort")
+	switch sort {
+	case "name", "release_date", "collector_number":
+		// valid
+	case "":
+		sort = "name"
+	default:
+		writeBadRequest(w, "sort inválido: use name, release_date ou collector_number")
+		return
+	}
+
+	order := strings.ToLower(qs.Get("order"))
+	switch order {
+	case "asc", "desc":
+		// valid
+	case "":
+		order = "asc"
+	default:
+		writeBadRequest(w, "order inválido: use asc ou desc")
+		return
+	}
+
+	tcg := qs.Get("tcg")
+	lang := qs.Get("lang")
+
+	rarity := strings.TrimSpace(qs.Get("rarity"))
+	rarity = escapeLikePattern(rarity)
+
+	page := atoiOrDefault(qs.Get("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+
+	limit := atoiOrDefault(qs.Get("limit"), 24)
+	if limit < 1 {
+		limit = 24
+	}
+	if limit > 48 {
+		limit = 48
+	}
+
+	if (page-1)*limit > 1000 {
+		writeErr(w, postgres.ErrSearchOffsetTooDeep)
+		return
+	}
+
+	results, total, err := h.cards.SearchCards(r.Context(), postgres.SearchCardsParams{
+		Q:      q,
+		Sort:   sort,
+		Order:  order,
+		TCG:    tcg,
+		Rarity: rarity,
+		Lang:   lang,
+		Page:   page,
+		Limit:  limit,
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	if q != "" || rarity != "" {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	}
+
+	writeJSON(w, http.StatusOK, searchCardsResponse{
+		Data:    results,
+		Total:   total,
+		Page:    page,
+		Limit:   limit,
+		HasMore: (page*limit) < total,
+	})
 }
