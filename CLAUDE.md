@@ -53,13 +53,14 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 
 ## Status Atual
 
-**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'` · autocomplete suporta formato `1/217` e `/217` (PR #17) · `cards.number` removido, `collector_number` é a chave natural (PR #18) · **admin CRUD de sets/cartas/variantes completo** (PR #19) · **busca server-side + infinite scroll em `/sets/[tcg]`** (PR #22).
+**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'` · autocomplete suporta formato `1/217` e `/217` (PR #17) · `cards.number` removido, `collector_number` é a chave natural (PR #18) · **admin CRUD de sets/cartas/variantes completo** (PR #19) · **busca server-side + infinite scroll em `/sets/[tcg]`** (PR #22) · **busca externa de preços + URL `/cards/{code}/{number}`** (PR #23).
 
 ### Migrations
 
 | # | Conteúdo |
 |---|---|
 | 000001 | Schema completo inicial — todas as tabelas, ENUMs, índices, triggers e seed do admin (PR #20) |
+| 000002 | `UNIQUE(code, language)` em `card_sets`; sufixo `_ja` removido dos codes japoneses (PR #23) |
 
 > A partir do PR #20, migrations são incrementais: `000002_*.sql`, `000003_*.sql`, etc.
 
@@ -81,6 +82,27 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 4. **Frontend estoque de selados** — `/lojas/[id]/selados`.
 5. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries (import_source tests já adicionados no PR #15; ListSetsByTCG coberto no PR #22).
 6. **Marketplace público** — listings + pagamentos (ver `docs/gaps.md`).
+
+## Busca Externa de Preços + URL /cards/{code}/{number} (PR #23 — mergeado 2026-05-19)
+
+**Funcionalidade:** botão "Buscar preços" na página de detalhe de carta abre modal com resultados em tempo real de LigaPokemon, TCGPlayer, Cardmarket e eBay.
+
+**URL de carta reformulada:** `/cards/{code}/{number}?lan=` substitui `/cards/{slug}`. Set code e collector number são segmentos de path separados; language é query param (omitido quando `en`). Chi suporta hífens em segmentos de path nativamente (ex: `tcgp-PB`).
+
+**Backend:**
+- `GET /cards/{code}/{number}` — handler lê `chi.URLParam(r, "code")`, `chi.URLParam(r, "number")`, `parseLanguage(r)` (default `"en"`)
+- SQL sempre recebe language: `WHERE cs.code = $1 AND cs.language = $2` — sem concatenação, queries indexadas
+- `AutocompleteResult.slug` retorna `base1/001` (EN) ou `base1/001?lan=ja` (JA)
+- LigaPokemon scraper: `numParamMatches` compara como inteiro (tolera zero-padding `num=013` == `"13"`); `findBestCardLink` com 4 níveis de prioridade (numAndEd > numOnly > edOnly > first); nome da carta como hint para fallback pokemontcg.io
+
+**Migration 000002:** `DROP CONSTRAINT card_sets_code_key` → `ADD CONSTRAINT card_sets_code_lang_key UNIQUE (code, language)`. UPDATE remove sufixo `_ja` dos ~210 set codes japoneses. Aplicar com `migrate up` em deploy.
+
+**Frontend:** `app/cards/[code]/[number]/page.tsx` (substituiu `[slug]`) lê `searchParams.lan`. `CardThumbnail`/`CardGridFilter` geram URLs com `?lan=ja` quando `setLanguage !== 'en'`. `SetCard` linka sets JA com `?lan=ja`. `TCGSet.language` adicionado ao tipo.
+
+**Padrões estabelecidos:**
+- URL de carta: `{code}/{number}` (sem hífen separando código do número) — set codes podem conter hífen (ex: `tcgp-PB`).
+- Language sempre passada explicitamente ao SQL, default `"en"` — nunca concatenar `code + "_" + language`.
+- `schema_migrations` do golang-migrate tem apenas UMA linha (versão atual) — nunca inserir múltiplas linhas manualmente.
 
 ## Busca Server-Side + Infinite Scroll em /sets/[tcg] (PR #22 — mergeado 2026-05-18)
 
@@ -129,7 +151,7 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 **Schema:**
 - Nunca editar migration já aplicada. Toda alteração de ENUM = nova migration.
 - `collector_number` armazena só o número (`"274"`), nunca `"274/217"`. Display composto no frontend.
-- Slug de carta: `{setCode}-{collectorNumber}`. Set codes **nunca** devem conter hífen.
+- URL de carta: `/cards/{code}/{number}?lan=` — set code e collector number como segmentos separados. Set codes **podem** conter hífen (ex: `tcgp-PB`); collector numbers nunca.
 
 **Frontend:**
 - App Router. Server component por padrão; `"use client"` só com estado/eventos/hooks.
