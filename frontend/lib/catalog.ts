@@ -44,8 +44,9 @@ export async function fetchSets(
   return res.json()
 }
 
-export async function fetchSet(tcg: string, code: string): Promise<TCGSet> {
-  const url = `${API}/api/v1/sets/${encodeURIComponent(tcg)}/${encodeURIComponent(code)}`
+export async function fetchSet(tcg: string, code: string, language = 'en'): Promise<TCGSet> {
+  const lanParam = language !== 'en' ? `?lan=${encodeURIComponent(language)}` : ''
+  const url = `${API}/api/v1/sets/${encodeURIComponent(tcg)}/${encodeURIComponent(code)}${lanParam}`
   const res = await fetch(url, { next: { revalidate: 3600 } })
   if (!res.ok) throw new Error(`fetchSet: HTTP ${res.status}`)
   return res.json()
@@ -56,8 +57,11 @@ export async function fetchSetCards(
   code: string,
   page = 1,
   limit = 60,
+  language = 'en',
 ): Promise<SetCardsResponse> {
-  const url = `${API}/api/v1/sets/${encodeURIComponent(tcg)}/${encodeURIComponent(code)}/cards?page=${page}&limit=${limit}`
+  const params = new URLSearchParams({ page: String(page), limit: String(limit) })
+  if (language !== 'en') params.set('lan', language)
+  const url = `${API}/api/v1/sets/${encodeURIComponent(tcg)}/${encodeURIComponent(code)}/cards?${params}`
   const res = await fetch(url, { next: { revalidate: 3600 } })
   if (!res.ok) throw new Error(`fetchSetCards: HTTP ${res.status}`)
   return res.json()
@@ -66,21 +70,23 @@ export async function fetchSetCards(
 export async function fetchAllSetCards(
   tcg: string,
   code: string,
+  language = 'en',
 ): Promise<CardInSet[]> {
-  const first = await fetchSetCards(tcg, code, 1, 200)
+  const first = await fetchSetCards(tcg, code, 1, 200, language)
   const total = first.total
   if (total <= 200) return first.cards
   const remainingPages = Math.ceil((total - 200) / 200)
   const rest = await Promise.all(
     Array.from({ length: remainingPages }, (_, i) =>
-      fetchSetCards(tcg, code, i + 2, 200),
+      fetchSetCards(tcg, code, i + 2, 200, language),
     ),
   )
   return [...first.cards, ...rest.flatMap(r => r.cards)]
 }
 
-export async function fetchCard(slug: string): Promise<CardDetail> {
-  const url = `${API}/api/v1/cards/${encodeURIComponent(slug)}`
+export async function fetchCard(code: string, number: string, language = 'en'): Promise<CardDetail> {
+  const lanParam = language !== 'en' ? `?lan=${encodeURIComponent(language)}` : ''
+  const url = `${API}/api/v1/cards/${encodeURIComponent(code)}/${encodeURIComponent(number)}${lanParam}`
   const res = await fetch(url, { next: { revalidate: 3600 } })
   if (!res.ok) throw new Error(`fetchCard: HTTP ${res.status}`)
   return res.json()

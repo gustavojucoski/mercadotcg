@@ -37,8 +37,9 @@ type AutocompleteResult struct {
 	CollectorNumber string    `json:"collector_number"`
 	SetCode         string    `json:"set_code"`
 	SetName         string    `json:"set_name"`
+	SetLanguage     string    `json:"set_language,omitempty"`
 	ImageSmallURL   string    `json:"image_small_url,omitempty"`
-	Slug            string    `json:"slug"` // "{set_code}-{collector_number}"
+	Slug            string    `json:"slug"` // "{set_code}/{collector_number}[?lan=xx]"
 }
 
 // CardRepo persiste e consulta sets, cards e variantes.
@@ -89,7 +90,7 @@ func (r *CardRepo) CreateSet(ctx context.Context, s *card.Set) error {
 const upsertSetSQL = `
 INSERT INTO card_sets (code, name, name_pt, name_en, series, series_id, tcg, language, release_date, total_cards, printed_total, image_url, symbol_url, import_source)
 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, NULLIF($10, 0), NULLIF($11, 0), NULLIF($12, ''), NULLIF($13, ''), $14)
-ON CONFLICT (code) DO UPDATE SET
+ON CONFLICT (code, language) DO UPDATE SET
     -- Preserve an already-English name when the incoming name is Japanese/CJK,
     -- so re-imports don't clobber DeepL-translated or manually-curated names.
     name          = CASE
@@ -139,7 +140,7 @@ func (r *CardRepo) UpsertSet(ctx context.Context, s *card.Set) error {
 		// The manual guard in the SQL WHERE clause fired — the row was not
 		// updated and RETURNING returned nothing. Fetch the existing row so the
 		// caller receives a valid s.ID without treating this as an error.
-		existing, fetchErr := r.GetSetByCode(ctx, s.Code)
+		existing, fetchErr := r.GetSetByCode(ctx, s.Code, string(s.Language))
 		if fetchErr != nil {
 			return fmt.Errorf("upsert blocked by manual guard, fetch fallback: %w", fetchErr)
 		}
@@ -164,14 +165,15 @@ SELECT
     cs.created_at, cs.updated_at
 FROM card_sets cs
 LEFT JOIN card_series cr ON cr.id = cs.series_id
-WHERE cs.code = $1`
+WHERE cs.code = $1 AND cs.language = $2`
 
-// GetSetByCode busca um set pelo seu code (ex.: "sv7").
-func (r *CardRepo) GetSetByCode(ctx context.Context, code string) (card.Set, error) {
+// GetSetByCode busca um set pelo code e language explícitos.
+// Language padrão "en" quando não há sufixo de idioma no identificador.
+func (r *CardRepo) GetSetByCode(ctx context.Context, code, language string) (card.Set, error) {
 	var s card.Set
 	var lang string
 
-	err := r.pool.QueryRow(ctx, selectSetByCodeSQL, code).Scan(
+	err := r.pool.QueryRow(ctx, selectSetByCodeSQL, code, language).Scan(
 		&s.ID, &s.Code, &s.Name, &s.NamePT, &s.NameEN,
 		&s.Series, &s.SeriesPT, &s.SeriesID,
 		&s.TCG, &lang, &s.ReleaseDate,
@@ -886,9 +888,9 @@ SELECT c.id, c.set_id, COALESCE(c.collector_number, ''), c.name::text, COALESCE(
        c.external_ids, c.created_at, c.updated_at,
        COUNT(*) OVER() AS total
 FROM cards c
-JOIN card_sets s ON s.id = c.set_id AND s.code = $1
+JOIN card_sets s ON s.id = c.set_id AND s.code = $1 AND s.language = $2
 ORDER BY NULLIF(regexp_replace(c.collector_number, '\D', '', 'g'), '')::int NULLS LAST, c.collector_number
-LIMIT $2 OFFSET $3`
+LIMIT $3 OFFSET $4`
 
 const listVariantsByCardsSQL = `
 SELECT id, card_id, finish::text, COALESCE(label, ''), is_promo, COALESCE(notes, ''), created_at
@@ -898,7 +900,7 @@ ORDER BY card_id, finish, label`
 
 // ListCardsBySetCode lista cartas paginadas de um set, ordenadas pelo collector_number
 // numérico. Cada carta vem acompanhada de suas variantes (via segunda query batch).
-func (r *CardRepo) ListCardsBySetCode(ctx context.Context, setCode string, page, limit int) ([]CardWithVariants, int, error) {
+func (r *CardRepo) ListCardsBySetCode(ctx context.Context, setCode, language string, page, limit int) ([]CardWithVariants, int, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 60
 	}
@@ -907,7 +909,7 @@ func (r *CardRepo) ListCardsBySetCode(ctx context.Context, setCode string, page,
 	}
 	offset := (page - 1) * limit
 
-	rows, err := r.pool.Query(ctx, listCardsBySetCodeSQL, setCode, limit, offset)
+	rows, err := r.pool.Query(ctx, listCardsBySetCodeSQL, setCode, language, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list cards by set: %w", err)
 	}
@@ -989,24 +991,25 @@ SELECT c.id, c.set_id, COALESCE(c.collector_number, ''), c.name::text, COALESCE(
 FROM cards c
 JOIN card_sets s ON s.id = c.set_id
 LEFT JOIN card_series cr ON cr.id = s.series_id
-WHERE s.code = $1 AND (
-    c.collector_number = $2
+WHERE s.code = $1 AND s.language = $2
+  AND (
+    c.collector_number = $3
     OR (
         c.collector_number ~ '^\d+$'
-        AND $2 ~ '^\d+$'
-        AND c.collector_number::int = $2::int
+        AND $3 ~ '^\d+$'
+        AND c.collector_number::int = $3::int
     )
 )
 LIMIT 1`
 
-// GetCardBySetAndNumber busca uma carta pelo código do set e collector_number.
+// GetCardByCodeAndNumber busca uma carta pelo código do set, language e collector_number.
 // Retorna ErrNotFound quando a combinação não existe.
-func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collectorNumber string) (card.Card, card.Set, error) {
+func (r *CardRepo) GetCardByCodeAndNumber(ctx context.Context, setCode, language, collectorNumber string) (card.Card, card.Set, error) {
 	var c card.Card
 	var s card.Set
 	var lang string
 
-	err := r.pool.QueryRow(ctx, getCardBySetAndNumberSQL, setCode, collectorNumber).Scan(
+	err := r.pool.QueryRow(ctx, getCardBySetAndNumberSQL, setCode, language, collectorNumber).Scan(
 		&c.ID, &c.SetID, &c.CollectorNumber, &c.Name, &c.NamePT,
 		&c.Rarity, &c.Supertype, &c.Subtypes, &c.Types,
 		&c.HP, &c.Illustrator, &c.ImageSmallURL, &c.ImageLargeURL,
@@ -1023,7 +1026,7 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 		return card.Card{}, card.Set{}, ErrNotFound
 	}
 	if err != nil {
-		return card.Card{}, card.Set{}, fmt.Errorf("get card by set+number: %w", err)
+		return card.Card{}, card.Set{}, fmt.Errorf("get card by code+number: %w", err)
 	}
 	s.Language = card.Language(lang)
 	return c, s, nil
@@ -1033,13 +1036,15 @@ func (r *CardRepo) GetCardBySetAndNumber(ctx context.Context, setCode, collector
 // Prioriza matches de prefixo (priority=1) sobre matches de similaridade trgm (priority=2).
 // Parâmetros: $1=query, $2=limit, $3=tcg ('' = todos os TCGs).
 const autocompleteNameSQL = `
-SELECT id, name, name_pt, collector_number, set_code, set_name, image_small_url, priority
+SELECT id, name, name_pt, collector_number, set_code, set_name, image_small_url, set_language, priority
 FROM (
     (
       SELECT c.id, c.name::text AS name, COALESCE(c.name_pt, '') AS name_pt,
              COALESCE(c.collector_number, '') AS collector_number,
-             s.code AS set_code, s.name::text AS set_name,
+             s.code AS set_code,
+             s.name::text AS set_name,
              COALESCE(c.image_small_url, '') AS image_small_url,
+             s.language::text AS set_language,
              1 AS priority
       FROM cards c
       JOIN card_sets s ON s.id = c.set_id
@@ -1053,6 +1058,7 @@ FROM (
       SELECT c.id, c.name::text, COALESCE(c.name_pt, ''), COALESCE(c.collector_number, ''),
              s.code, s.name::text,
              COALESCE(c.image_small_url, ''),
+             s.language::text,
              2 AS priority
       FROM cards c
       JOIN card_sets s ON s.id = c.set_id
@@ -1078,8 +1084,10 @@ LIMIT $2`
 const autocompleteNumberSQL = `
 SELECT c.id, c.name::text AS name, COALESCE(c.name_pt, '') AS name_pt,
        COALESCE(c.collector_number, '') AS collector_number,
-       s.code AS set_code, s.name::text AS set_name,
-       COALESCE(c.image_small_url, '') AS image_small_url
+       s.code AS set_code,
+       s.name::text AS set_name,
+       COALESCE(c.image_small_url, '') AS image_small_url,
+       s.language::text AS set_language
 FROM cards c
 JOIN card_sets s ON s.id = c.set_id
 WHERE ($1 = '' OR c.collector_number = $1)
@@ -1153,7 +1161,7 @@ func (r *CardRepo) AutocompleteCards(ctx context.Context, q, tcg string, limit i
 		if parsed.isNumberSearch {
 			if err := rows.Scan(
 				&a.ID, &a.Name, &a.NamePT, &a.CollectorNumber,
-				&a.SetCode, &a.SetName, &a.ImageSmallURL,
+				&a.SetCode, &a.SetName, &a.ImageSmallURL, &a.SetLanguage,
 			); err != nil {
 				return nil, fmt.Errorf("scan autocomplete row: %w", err)
 			}
@@ -1161,12 +1169,16 @@ func (r *CardRepo) AutocompleteCards(ctx context.Context, q, tcg string, limit i
 			var priority int
 			if err := rows.Scan(
 				&a.ID, &a.Name, &a.NamePT, &a.CollectorNumber,
-				&a.SetCode, &a.SetName, &a.ImageSmallURL, &priority,
+				&a.SetCode, &a.SetName, &a.ImageSmallURL, &a.SetLanguage, &priority,
 			); err != nil {
 				return nil, fmt.Errorf("scan autocomplete row: %w", err)
 			}
 		}
-		a.Slug = fmt.Sprintf("%s-%s", a.SetCode, a.CollectorNumber)
+		if a.SetLanguage != "" && a.SetLanguage != "en" {
+			a.Slug = fmt.Sprintf("%s/%s?lan=%s", a.SetCode, a.CollectorNumber, a.SetLanguage)
+		} else {
+			a.Slug = fmt.Sprintf("%s/%s", a.SetCode, a.CollectorNumber)
+		}
 		out = append(out, a)
 	}
 	return out, rows.Err()

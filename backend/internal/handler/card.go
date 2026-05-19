@@ -38,11 +38,11 @@ func (h *CardHandler) Routes(r chi.Router) {
 	r.Get("/sets/{tcg}", h.listSetsByTCG)
 	r.Get("/sets/{tcg}/{code}", h.getSetByCode)
 	r.Get("/sets/{tcg}/{code}/cards", h.listCardsBySet)
-	// autocomplete registrado antes de /cards/{slug}: chi usa radix tree (estático > paramétrico),
+	// autocomplete registrado antes de /cards/{code}/{number}: chi usa radix tree (estático > paramétrico),
 	// mas a ordem explícita documenta a intenção e evita qualquer ambiguidade futura.
 	r.Get("/cards/autocomplete", h.autocomplete)
-	// Handler unificado: UUID → busca por ID; slug "{setCode}-{collectorNumber}" → busca por set+número.
-	r.Get("/cards/{slug}", h.getCard)
+	// Rota pública de carta: /cards/{setCode}/{collectorNumber}?lan=ja
+	r.Get("/cards/{code}/{number}", h.getCardByCodeAndNumber)
 	r.Get("/cards/{id}/variants", h.listVariants)
 
 	r.With(h.mw.RequirePlatformAdmin).Patch("/admin/sets/{id}/name-pt", h.updateSetNamePT)
@@ -175,32 +175,60 @@ func (h *CardHandler) lookup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// parseLanguage lê o query param ?lan=, defaultando para "en".
+func parseLanguage(r *http.Request) string {
+	if lan := r.URL.Query().Get("lan"); lan != "" {
+		return lan
+	}
+	return "en"
+}
+
 // ----------------------------------------------------------------------------
-// GET /cards/{slug}
+// GET /cards/{code}/{number}?lan=
 //
-// Aceita dois formatos:
-//   - UUID puro (ex: "550e8400-e29b-41d4-a716-446655440000") → busca por ID
-//   - Slug no formato "{setCode}-{collectorNumber}" (ex: "sv1-1", "swsh12-TG01")
-//     → busca por set e collector_number; retorna carta + set + variantes com preço NM
+// Busca uma carta pelo code do set e collector_number, com language opcional.
+// Retorna carta + set + variantes com preço NM.
 //
 // ----------------------------------------------------------------------------
 
-func (h *CardHandler) getCard(w http.ResponseWriter, r *http.Request) {
-	param := chi.URLParam(r, "slug")
+func (h *CardHandler) getCardByCodeAndNumber(w http.ResponseWriter, r *http.Request) {
+	code := chi.URLParam(r, "code")
+	number := chi.URLParam(r, "number")
+	language := parseLanguage(r)
 
-	// Tenta interpretar como UUID primeiro.
-	if id, err := parseUUID(param); err == nil {
-		c, err := h.cards.GetCardByID(r.Context(), id)
+	c, s, err := h.cards.GetCardByCodeAndNumber(r.Context(), code, language, number)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	variants, err := h.cards.ListVariantsByCard(r.Context(), c.ID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	blocks := make([]variantWithPrice, 0, len(variants))
+	for _, v := range variants {
+		summary, err := h.priceDaily.GetLatestByVariant(r.Context(), v.ID, string(pricing.ConditionNearMint))
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, c)
-		return
+		blocks = append(blocks, variantWithPrice{
+			ID:           v.ID,
+			Finish:       string(v.Finish),
+			Label:        v.Label,
+			IsPromo:      v.IsPromo,
+			PriceSummary: summary, // nil quando sem dados — serializa como null no JSON
+		})
 	}
 
-	// Caso contrário, trata como slug "{setCode}-{collectorNumber}".
-	h.getCardBySlug(w, r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"card":     c,
+		"set":      s,
+		"variants": blocks,
+	})
 }
 
 // ----------------------------------------------------------------------------
@@ -344,12 +372,13 @@ func escapeLikePattern(s string) string {
 	return s
 }
 
-// GET /sets/{tcg}/{code}
+// GET /sets/{tcg}/{code}?lan=
 func (h *CardHandler) getSetByCode(w http.ResponseWriter, r *http.Request) {
 	tcg := chi.URLParam(r, "tcg")
 	code := chi.URLParam(r, "code")
+	language := parseLanguage(r)
 
-	s, err := h.cards.GetSetByCode(r.Context(), code)
+	s, err := h.cards.GetSetByCode(r.Context(), code, language)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -364,9 +393,10 @@ func (h *CardHandler) getSetByCode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
-// GET /sets/{tcg}/{code}/cards?page=1&limit=60
+// GET /sets/{tcg}/{code}/cards?page=1&limit=60&lan=
 func (h *CardHandler) listCardsBySet(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
+	language := parseLanguage(r)
 	q := r.URL.Query()
 
 	page := atoiOrDefault(q.Get("page"), 1)
@@ -375,7 +405,7 @@ func (h *CardHandler) listCardsBySet(w http.ResponseWriter, r *http.Request) {
 		limit = 200
 	}
 
-	cards, total, err := h.cards.ListCardsBySetCode(r.Context(), code, page, limit)
+	cards, total, err := h.cards.ListCardsBySetCode(r.Context(), code, language, page, limit)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -416,58 +446,9 @@ func (h *CardHandler) autocomplete(w http.ResponseWriter, r *http.Request) {
 
 // variantWithPrice é a variante enriquecida com o resumo de preço mais recente.
 type variantWithPrice struct {
-	ID           uuid.UUID             `json:"id"`
-	Finish       string                `json:"finish"`
-	Label        string                `json:"label,omitempty"`
-	IsPromo      bool                  `json:"is_promo"`
+	ID           uuid.UUID              `json:"id"`
+	Finish       string                 `json:"finish"`
+	Label        string                 `json:"label,omitempty"`
+	IsPromo      bool                   `json:"is_promo"`
 	PriceSummary *postgres.PriceSummary `json:"price_summary"`
-}
-
-// getCardBySlug é chamado por getCard quando o parâmetro não é um UUID.
-// Formato do slug: "{setCode}-{collectorNumber}".
-// Collector numbers podem conter hífens (ex: "TG01-EN") — split apenas no PRIMEIRO hífen.
-func (h *CardHandler) getCardBySlug(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "slug")
-
-	idx := strings.Index(slug, "-")
-	if idx < 0 {
-		writeBadRequest(w, "slug inválido — formato esperado: {set}-{número}")
-		return
-	}
-	setCode := slug[:idx]
-	collectorNumber := slug[idx+1:]
-
-	c, s, err := h.cards.GetCardBySetAndNumber(r.Context(), setCode, collectorNumber)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-
-	variants, err := h.cards.ListVariantsByCard(r.Context(), c.ID)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-
-	blocks := make([]variantWithPrice, 0, len(variants))
-	for _, v := range variants {
-		summary, err := h.priceDaily.GetLatestByVariant(r.Context(), v.ID, string(pricing.ConditionNearMint))
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		blocks = append(blocks, variantWithPrice{
-			ID:           v.ID,
-			Finish:       string(v.Finish),
-			Label:        v.Label,
-			IsPromo:      v.IsPromo,
-			PriceSummary: summary, // nil quando sem dados — serializa como null no JSON
-		})
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"card":     c,
-		"set":      s,
-		"variants": blocks,
-	})
 }

@@ -94,11 +94,64 @@ func New(timeout time.Duration, apiKey string) *Client {
 	}
 }
 
-// FindCard resolve uma carta pelo ptcgoCode do set + número da carta.
+// cardAPIBody é o shape compartilhado pela resposta de /cards da pokemontcg.io.
+type cardAPIBody struct {
+	Data []struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Number string `json:"number"`
+		Set    struct {
+			PtcgoCode    string `json:"ptcgoCode"`
+			Name         string `json:"name"`
+			PrintedTotal int    `json:"printedTotal"`
+		} `json:"set"`
+		TCGPlayer struct {
+			URL    string                   `json:"url"`
+			Prices map[string]TCGPriceRange `json:"prices"`
+		} `json:"tcgplayer"`
+		Cardmarket struct {
+			URL    string                `json:"url"`
+			Prices *CardmarketPriceRange `json:"prices"`
+		} `json:"cardmarket"`
+	} `json:"data"`
+}
+
+// queryCard executa uma busca na pokemontcg.io com a query q e retorna o body decodificado.
+func (c *Client) queryCard(ctx context.Context, q string) (cardAPIBody, error) {
+	target := fmt.Sprintf("%s/cards?q=%s&pageSize=1&select=id,name,number,set,tcgplayer,cardmarket",
+		apiBase, url.QueryEscape(q))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return cardAPIBody{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("X-Api-Key", c.apiKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return cardAPIBody{}, fmt.Errorf("pokemontcgio: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return cardAPIBody{}, fmt.Errorf("pokemontcgio: status %d", resp.StatusCode)
+	}
+	var body cardAPIBody
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return cardAPIBody{}, fmt.Errorf("pokemontcgio: decode: %w", err)
+	}
+	return body, nil
+}
+
+// FindCard resolve uma carta pelo set + número da carta.
+// setCode pode ser o ptcgoCode (ex: "ASC") OU o ID do set no pokemontcg.io (ex: "sv8pt5").
+// Tenta set.ptcgoCode primeiro (admin standalone usa ptcgoCode); valida o match e, se não
+// bater, tenta set.id para compatibilidade com os códigos do catálogo interno (Scrydex).
+// Resultados ficam em cache por 24h sob a chave do input E do set.id canônico, evitando
+// colisão entre os dois namespaces.
 // Também resolve o TCGPlayer product ID via redirect (não-fatal se falhar).
-// Resultados ficam em cache por 24h.
-func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardInfo, error) {
-	key := strings.ToUpper(ptcgoCode) + ":" + number
+func (c *Client) FindCard(ctx context.Context, setCode, number string) (CardInfo, error) {
+	key := strings.ToUpper(setCode) + ":" + number
 
 	c.mu.Lock()
 	if e, ok := c.cache[key]; ok && time.Now().Before(e.expiresAt) {
@@ -107,51 +160,23 @@ func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardIn
 	}
 	c.mu.Unlock()
 
-	q := fmt.Sprintf("set.ptcgoCode:%s number:%s", ptcgoCode, number)
-	target := fmt.Sprintf("%s/cards?q=%s&pageSize=1&select=id,name,number,set,tcgplayer,cardmarket",
-		apiBase, url.QueryEscape(q))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	// Tenta set.ptcgoCode primeiro (admin standalone passa ptcgoCode).
+	// Valida que o ptcgoCode retornado bate com o input — a API Lucene pode retornar
+	// cartas de outros sets em edge cases; descartar e cair no fallback nesses casos.
+	body, err := c.queryCard(ctx, fmt.Sprintf("set.ptcgoCode:%s number:%s", setCode, number))
 	if err != nil {
 		return CardInfo{}, err
 	}
-	req.Header.Set("Accept", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("X-Api-Key", c.apiKey)
+	if len(body.Data) > 0 && !strings.EqualFold(body.Data[0].Set.PtcgoCode, setCode) {
+		body.Data = nil // match espúrio — descarta, força fallback para set.id
 	}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return CardInfo{}, fmt.Errorf("pokemontcgio: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return CardInfo{}, fmt.Errorf("pokemontcgio: status %d", resp.StatusCode)
-	}
-
-	var body struct {
-		Data []struct {
-			ID     string `json:"id"`
-			Name   string `json:"name"`
-			Number string `json:"number"`
-			Set    struct {
-				PtcgoCode    string `json:"ptcgoCode"`
-				Name         string `json:"name"`
-				PrintedTotal int    `json:"printedTotal"`
-			} `json:"set"`
-			TCGPlayer struct {
-				URL    string                   `json:"url"`
-				Prices map[string]TCGPriceRange `json:"prices"`
-			} `json:"tcgplayer"`
-			Cardmarket struct {
-				URL    string                `json:"url"`
-				Prices *CardmarketPriceRange `json:"prices"`
-			} `json:"cardmarket"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return CardInfo{}, fmt.Errorf("pokemontcgio: decode: %w", err)
+	// Fallback set.id: códigos do catálogo Scrydex coincidem com o set.id da pokemontcg.io.
+	if len(body.Data) == 0 {
+		body, err = c.queryCard(ctx, fmt.Sprintf("set.id:%s number:%s", setCode, number))
+		if err != nil {
+			return CardInfo{}, err
+		}
 	}
 	if len(body.Data) == 0 {
 		return CardInfo{}, ErrNotFound
@@ -162,7 +187,7 @@ func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardIn
 		ID:               d.ID,
 		Name:             d.Name,
 		Number:           d.Number,
-		SetCode:          d.Set.PtcgoCode,
+		SetCode:          d.Set.PtcgoCode, // pode ser vazio para alguns sets JA
 		SetName:          d.Set.Name,
 		SetPrintedTotal:  d.Set.PrintedTotal,
 		TCGPlayerURL:     d.TCGPlayer.URL,
@@ -190,8 +215,14 @@ func (c *Client) FindCard(ctx context.Context, ptcgoCode, number string) (CardIn
 		}
 	}
 
+	entry := cacheEntry{info: info, expiresAt: time.Now().Add(24 * time.Hour)}
 	c.mu.Lock()
-	c.cache[key] = cacheEntry{info: info, expiresAt: time.Now().Add(24 * time.Hour)}
+	c.cache[key] = entry
+	// Armazena também sob a chave canônica (set.id do pokemontcg.io extraído de d.ID)
+	// para que lookups futuros com qualquer namespace encontrem o cache.
+	if i := strings.LastIndex(d.ID, "-"); i > 0 {
+		c.cache[strings.ToUpper(d.ID[:i])+":"+number] = entry
+	}
 	c.mu.Unlock()
 
 	return info, nil

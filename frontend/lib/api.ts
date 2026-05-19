@@ -20,8 +20,10 @@ export async function authedFetch(url: string, init?: RequestInit): Promise<Resp
   return res
 }
 
-export async function searchCard(number: string, set: string): Promise<SearchResult> {
-  const url = `${API_URL}/api/v1/external-search?number=${encodeURIComponent(number)}&set=${encodeURIComponent(set)}`
+export async function searchCard(number: string, set: string, name?: string): Promise<SearchResult> {
+  const params = new URLSearchParams({ number, set })
+  if (name) params.set('name', name)
+  const url = `${API_URL}/api/v1/external-search?${params}`
   const res = await authedFetch(url)
   if (!res.ok) {
     const text = await res.text().catch(() => '')

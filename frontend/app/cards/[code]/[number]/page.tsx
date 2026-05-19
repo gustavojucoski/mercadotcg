@@ -4,21 +4,24 @@ import { SiteHeader } from '@/components/SiteHeader'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { VariantTabs } from '@/components/VariantTabs'
 import { LocalizedText } from '@/components/LocalizedText'
+import { ExternalPriceSearchButton } from '@/components/ExternalPriceSearchButton'
 import { fetchCard } from '@/lib/catalog'
 import { finishLabel } from '@/lib/variants'
 
 export const revalidate = 3600
 
 interface Props {
-  params: Promise<{ slug: string }>
+  params: Promise<{ code: string; number: string }>
+  searchParams: Promise<{ lan?: string }>
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { slug } = await params
+export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
+  const { code, number } = await params
+  const { lan } = await searchParams
+  const language = lan ?? 'en'
   try {
-    const data = await fetchCard(slug)
+    const data = await fetchCard(code, number, language)
     const { card, set } = data
-    // SEO: always use EN names for consistent indexing
     const title = `${card.name} ${card.collector_number} — ${set.name} | MercadoTCG`
     const description = `Carta ${card.name} do set ${set.name}. Número ${card.collector_number}, raridade ${card.rarity}. Veja preços e variantes.`
     return {
@@ -41,14 +44,15 @@ function formatBRL(value: string): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
-export default async function CardDetailPage({ params }: Props) {
-  const { slug } = await params
+export default async function CardDetailPage({ params, searchParams }: Props) {
+  const { code, number } = await params
+  const { lan } = await searchParams
+  const language = lan ?? 'en'
 
-  const data = await fetchCard(slug).catch(() => null)
+  const data = await fetchCard(code, number, language).catch(() => null)
   if (!data) notFound()
 
   const { card, set, variants } = data
-  // EN names used for SEO-critical schema.org and breadcrumb server-rendered labels
   const cardNameEn = card.name
   const cardNamePt = card.name_pt
   const setNameEn = set.name
@@ -57,10 +61,10 @@ export default async function CardDetailPage({ params }: Props) {
   const seriesNamePt = set.series_pt
   const tcg = set.tcg
 
-  // Breadcrumb uses PT when available (falls back to EN); hydrated server-side so
-  // it won't react to client toggle — acceptable trade-off for a nav element
   const breadcrumbSetLabel = setNamePt && setNamePt.length > 0 ? setNamePt : setNameEn
   const breadcrumbCardLabel = cardNamePt && cardNamePt.length > 0 ? cardNamePt : cardNameEn
+
+  const setHref = `/sets/${tcg}/${set.code}${set.language && set.language !== 'en' ? `?lan=${set.language}` : ''}`
 
   const lowestPrice = variants
     .map(v => v.price_summary?.min_brl)
@@ -71,7 +75,6 @@ export default async function CardDetailPage({ params }: Props) {
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Product',
-    // JSON-LD always uses EN name for SEO
     name: cardNameEn,
     image: card.image_large_url || card.image_small_url,
     description: `Carta ${cardNameEn} do set ${setNameEn}. Número ${card.collector_number}, raridade ${card.rarity}.`,
@@ -99,7 +102,7 @@ export default async function CardDetailPage({ params }: Props) {
             { label: 'MercadoTCG', href: '/' },
             { label: 'Sets', href: '/sets' },
             { label: tcg === 'pokemon' ? 'Pokémon TCG' : tcg, href: `/sets/${tcg}` },
-            { label: breadcrumbSetLabel, href: `/sets/${tcg}/${set.code}` },
+            { label: breadcrumbSetLabel, href: setHref },
             { label: breadcrumbCardLabel },
           ]}
         />
@@ -132,15 +135,23 @@ export default async function CardDetailPage({ params }: Props) {
             )}
 
             <div className="mt-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5">
-              <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4 uppercase tracking-wide">
-                Informações da carta
-              </h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wide">
+                  Informações da carta
+                </h2>
+                <ExternalPriceSearchButton
+                  collectorNumber={card.collector_number}
+                  setCode={set.code}
+                  cardName={cardNameEn}
+                  setName={setNameEn}
+                />
+              </div>
               <dl className="space-y-3">
                 <div className="flex items-start gap-2">
                   <dt className="w-32 shrink-0 text-sm text-zinc-400">Set</dt>
                   <dd className="text-sm text-zinc-900 dark:text-zinc-100">
                     <a
-                      href={`/sets/${tcg}/${set.code}`}
+                      href={setHref}
                       className="text-violet-600 dark:text-violet-400 hover:underline"
                     >
                       <LocalizedText en={setNameEn} pt={setNamePt} />

@@ -35,6 +35,12 @@ export default function AdminPage() {
         <p className="text-sm text-zinc-500 mt-1">Consulte preços em tempo real em múltiplas plataformas.</p>
       </div>
 
+      <div className="mb-6 border-l-4 border-blue-300 bg-blue-50 px-4 py-3 dark:border-blue-700 dark:bg-blue-950/30">
+        <p className="text-sm text-blue-700 dark:text-blue-300">
+          Esta busca standalone está disponível para cartas fora do catálogo. Para cartas do catálogo, use o botão &quot;Buscar preços externos&quot; diretamente na página da carta.
+        </p>
+      </div>
+
       <div className="mb-6">
         <SearchForm onSearch={handleSearch} loading={loading} />
       </div>

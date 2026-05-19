@@ -15,6 +15,7 @@ const SUPPORTED_TCGS: Record<string, string> = {
 
 interface Props {
   params: Promise<{ tcg: string; code: string }>
+  searchParams: Promise<{ lan?: string }>
 }
 
 export async function generateStaticParams() {
@@ -26,10 +27,12 @@ export async function generateStaticParams() {
   }
 }
 
-export async function generateMetadata({ params }: { params: Promise<{ tcg: string; code: string }> }): Promise<Metadata> {
+export async function generateMetadata({ params, searchParams }: { params: Promise<{ tcg: string; code: string }>; searchParams: Promise<{ lan?: string }> }): Promise<Metadata> {
   const { tcg, code } = await params
+  const { lan } = await searchParams
+  const language = lan ?? 'en'
   try {
-    const set = await fetchSet(tcg, code)
+    const set = await fetchSet(tcg, code, language)
     const tcgLabel = SUPPORTED_TCGS[tcg] ?? tcg
     // SEO always uses EN name for consistent indexing
     return {
@@ -41,15 +44,17 @@ export async function generateMetadata({ params }: { params: Promise<{ tcg: stri
   }
 }
 
-export default async function SetDetailPage({ params }: Props) {
+export default async function SetDetailPage({ params, searchParams }: Props) {
   const { tcg, code } = await params
+  const { lan } = await searchParams
+  const language = lan ?? 'en'
 
   const tcgLabel = SUPPORTED_TCGS[tcg]
   if (!tcgLabel) notFound()
 
   const [set, cards] = await Promise.all([
-    fetchSet(tcg, code).catch(() => null),
-    fetchAllSetCards(tcg, code).catch(() => []),
+    fetchSet(tcg, code, language).catch(() => null),
+    fetchAllSetCards(tcg, code, language).catch(() => []),
   ])
 
   if (!set) notFound()
@@ -119,6 +124,7 @@ export default async function SetDetailPage({ params }: Props) {
         <CardGridFilter
           cards={cards}
           setCode={set.code}
+          setLanguage={set.language}
         />
       </main>
     </div>

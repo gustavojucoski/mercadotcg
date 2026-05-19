@@ -58,6 +58,7 @@ export interface TCGSeries {
 export interface TCGSet {
   id: string
   code: string
+  language: string
   name: string
   name_pt: string
   series: string
