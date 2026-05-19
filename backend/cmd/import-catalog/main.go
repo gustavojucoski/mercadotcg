@@ -577,7 +577,7 @@ func buildTCGDexLocalID(setCode, collectorNumber string) string {
 // When the set exists with import_source = 'manual', s is populated from the
 // existing row so callers can use s.ID for the card import loop.
 func upsertSetProtected(ctx context.Context, repo *postgres.CardRepo, s *card.Set, logoURL, symbolURL string) error {
-	existing, err := repo.GetSetByCode(ctx, s.Code)
+	existing, err := repo.GetSetByCode(ctx, s.Code, string(s.Language))
 	if err == nil && existing.ImportSource == "manual" {
 		log.Info().Str("set", s.Code).Msg("skipping manual set")
 		*s = existing

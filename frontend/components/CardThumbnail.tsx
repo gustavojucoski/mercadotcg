@@ -7,6 +7,7 @@ import { useLang } from '@/lib/locale'
 interface CardThumbnailProps {
   card: CardInSet
   setCode: string
+  setLanguage?: string
 }
 
 const RARITY_COLOR: Record<string, string> = {
@@ -38,15 +39,16 @@ function localizedImgUrl(
   return url
 }
 
-export function CardThumbnail({ card, setCode }: CardThumbnailProps) {
+export function CardThumbnail({ card, setCode, setLanguage }: CardThumbnailProps) {
   const { t, lang } = useLang()
-  const slug = `${setCode}-${card.collector_number}`
+  const lanSuffix = setLanguage && setLanguage !== 'en' ? `?lan=${setLanguage}` : ''
+  const cardHref = `/cards/${setCode}/${card.collector_number}${lanSuffix}`
   const displayName = t(card.name, card.name_pt)
   const imgSrc = localizedImgUrl(card.image_small_url, lang, card.image_url_pt)
 
   return (
     <Link
-      href={`/cards/${slug}`}
+      href={cardHref}
       className="group flex flex-col rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden hover:border-violet-300 dark:hover:border-violet-700 hover:shadow-md transition-all"
     >
       <div className="bg-zinc-50 dark:bg-zinc-800/50 flex items-center justify-center p-2 aspect-[2.5/3.5]">

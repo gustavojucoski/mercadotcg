@@ -9,6 +9,7 @@ import { useLang } from '@/lib/locale'
 interface CardGridFilterProps {
   cards: CardInSet[]
   setCode: string
+  setLanguage?: string
 }
 
 function normalizeNum(s: string): string {
@@ -21,7 +22,7 @@ function localizedImgUrl(url: string | undefined, lang: string): string | undefi
   return url.replace('/en/tcgp/', '/pt-br/tcgp/')
 }
 
-export function CardGridFilter({ cards, setCode }: CardGridFilterProps) {
+export function CardGridFilter({ cards, setCode, setLanguage }: CardGridFilterProps) {
   const [query, setQuery] = useState('')
   const [selectedRarities, setSelectedRarities] = useState<Set<string>>(new Set())
   const [view, setView] = useState<'grid' | 'list'>('grid')
@@ -138,19 +139,20 @@ export function CardGridFilter({ cards, setCode }: CardGridFilterProps) {
       {view === 'grid' ? (
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 gap-3">
           {filtered.map(card => (
-            <CardThumbnail key={card.id} card={card} setCode={setCode} />
+            <CardThumbnail key={card.id} card={card} setCode={setCode} setLanguage={setLanguage} />
           ))}
         </div>
       ) : (
         <div className="space-y-2">
           {filtered.map(card => {
-            const slug = `${setCode}-${card.collector_number}`
+            const lanSuffix = setLanguage && setLanguage !== 'en' ? `?lan=${setLanguage}` : ''
+            const cardHref = `/cards/${setCode}/${card.collector_number}${lanSuffix}`
             const displayName = t(card.name, card.name_pt)
             const imgSrc = localizedImgUrl(card.image_small_url, lang)
             return (
               <Link
                 key={card.id}
-                href={`/cards/${slug}`}
+                href={cardHref}
                 className="flex items-center gap-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-4 py-3 hover:border-violet-300 dark:hover:border-violet-700 transition-colors group"
               >
                 {imgSrc ? (

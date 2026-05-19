@@ -12,10 +12,11 @@ export function SetCard({ set }: SetCardProps) {
   const { t } = useLang()
   const displayName = t(set.name, set.name_pt)
   const displaySeries = t(set.series, set.series_pt)
+  const lanSuffix = set.language && set.language !== 'en' ? `?lan=${set.language}` : ''
 
   return (
     <Link
-      href={`/sets/${set.tcg}/${set.code}`}
+      href={`/sets/${set.tcg}/${set.code}${lanSuffix}`}
       className="group flex flex-col rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 hover:border-violet-300 dark:hover:border-violet-700 hover:shadow-md transition-all"
     >
       <div className="flex items-center justify-center h-16 mb-3 relative">
