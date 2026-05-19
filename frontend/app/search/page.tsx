@@ -75,6 +75,7 @@ async function SearchResultsLoader({ q, sort, order, tcg, rarity, lang }: {
 
   return (
     <SearchResults
+      key={`${q}|${sort}|${order}|${tcg}|${rarity}|${lang}`}
       initialData={initialData}
       initialQ={q}
       initialSort={sort}
