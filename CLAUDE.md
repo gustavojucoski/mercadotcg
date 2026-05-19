@@ -53,7 +53,7 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 
 ## Status Atual
 
-**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'` · autocomplete suporta formato `1/217` e `/217` (PR #17) · `cards.number` removido, `collector_number` é a chave natural (PR #18) · **admin CRUD de sets/cartas/variantes completo** (PR #19) · **busca server-side + infinite scroll em `/sets/[tcg]`** (PR #22) · **busca externa de preços + URL `/cards/{code}/{number}`** (PR #23).
+**Fase:** Auth completo · gestão de lojas · catálogo multi-TCG via **Scrydex** (primário, EN + sets JA) + TCGDex (complemento PT-BR) · bilíngue PT-BR/EN · catálogo público navegável (sets, cartas, autocomplete, sitemap) · imagens em S3 próprio · `import_source` rastreia origem de cada registro · Pokémon TCG Pocket separado como `tcg='pokemon-pocket'` · autocomplete suporta formato `1/217` e `/217` (PR #17) · `cards.number` removido, `collector_number` é a chave natural (PR #18) · **admin CRUD de sets/cartas/variantes completo** (PR #19) · **busca server-side + infinite scroll em `/sets/[tcg]`** (PR #22) · **busca externa de preços + URL `/cards/{code}/{number}`** (PR #23) · **página de busca geral `/search` com infinite scroll, filtros e ordenação** (PR #24).
 
 ### Migrations
 
@@ -77,11 +77,36 @@ Marketplace e rastreador de preços de Pokémon TCG focado em **vendas reais** e
 ## Próximos Passos
 
 1. **Executar reimportação completa** — `import-catalog` com plano Scrydex Growth (50k créditos) para substituir os 208 sets legados TCGDex. Depois `--enrich-pt` para PT-BR.
-2. **Remover remotePatterns de transição** — `assets.tcgdex.net` e `images.pokemontcg.io` em `next.config.ts` após confirmar que tudo aponta para o S3 próprio.
+2. **Remover remotePatterns de transição** — `assets.tcgdex.net`, `images.pokemontcg.io` e `images.scrydex.com` em `next.config.ts` após confirmar que tudo aponta para o S3 próprio.
 3. **Frontend estoque de singles** — `/lojas/[id]/singles` com seleção de cartas via API de catálogo.
 4. **Frontend estoque de selados** — `/lojas/[id]/selados`.
-5. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries (import_source tests já adicionados no PR #15; ListSetsByTCG coberto no PR #22).
+5. **Testes integrados** — `testcontainers-go`: StockRepo, PriceDailyRepo, card queries (import_source tests já adicionados no PR #15; ListSetsByTCG coberto no PR #22; SearchCards handler + repo cobertos no PR #24).
 6. **Marketplace público** — listings + pagamentos (ver `docs/gaps.md`).
+
+## Página de Busca Geral /search (PR #24 — mergeado 2026-05-19)
+
+**Funcionalidade:** página `/search` com resultados paginados pelo servidor, infinite scroll, filtros e ordenação. O autocomplete do header redireciona para ela ao pressionar Enter ou clicar na lupa.
+
+**Backend — `GET /search/cards`** (parâmetros: `q`, `sort`, `order`, `tcg`, `rarity`, `lang`, `page`, `limit`):
+- `SearchCards` no repo: `COUNT(*) OVER()` em passagem única, ORDER BY via allowlist Go (sem interpolação livre), WHERE builder com `$N` posicionais.
+- Ordenação: `name` (default), `release_date`, `collector_number` (cast numérico via `regexp_replace` — suporta `TG01`, `GG70`). Tie-breaker `c.id ASC` em todas as branches.
+- Guard de profundidade: `(page-1)*limit > 1000` → `ErrSearchOffsetTooDeep` → HTTP 400.
+- `escapeLikePattern` em `q` e `rarity`; truncagem de `q` com `[]rune` (max 80 chars).
+- Cache-Control: `max-age=3600` sem filtros voláteis, `max-age=60` com `q` ou `rarity`.
+- Response: `{data, total, page, limit, has_more}`. `data` sempre array (nunca `null`).
+
+**Frontend:**
+- `app/search/page.tsx` — RSC; SSR da primeira página via `API_INTERNAL`; Suspense boundary; `key` composta força remontagem ao navegar via GlobalSearch.
+- `SearchResults` (`'use client'`) — debounce 300ms, `requestSeq` anti-race, IntersectionObserver, `router.replace` para URL sync, `robots: noindex`.
+- `GlobalSearch` — Enter e clique na lupa navegam para `/search?q=`.
+- `lib/rarities.ts` — `POKEMON_RARITIES` (20 raridades do Pokémon TCG).
+
+**Testes:** 28 testes unitários de handler + 14 testes de integração de repo (skipam sem `DATABASE_URL`). Fix em `card_repo_import_source_test.go` (assinatura `GetSetByCode` quebrada após PR #23).
+
+**Padrões estabelecidos:**
+- `key` composta em RSC → Client Component força remontagem ao mudar `searchParams` via `router.push` — evita estado obsoleto.
+- `fetchSearchResultsServer` (usa `API_INTERNAL`) separado de `fetchSearchResults` (usa `API_URL`) — mesmo padrão de `catalog.ts`.
+- Novos domínios de imagem externos → sempre adicionar a `next.config.ts` `remotePatterns` (`images.scrydex.com` adicionado neste PR).
 
 ## Busca Externa de Preços + URL /cards/{code}/{number} (PR #23 — mergeado 2026-05-19)
 
