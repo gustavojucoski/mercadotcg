@@ -52,6 +52,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: err.Error()})
 	case errors.Is(err, postgres.ErrInvalidMovement):
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
+	case errors.Is(err, postgres.ErrSearchOffsetTooDeep):
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "página muito profunda: refine os filtros para navegar além da página 42"})
 	default:
 		log.Error().Err(err).Msg("internal error")
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "erro interno"})

@@ -67,17 +67,31 @@ export function GlobalSearch() {
     router.push(`/cards/${item.slug}`)
   }, [router])
 
+  function navigateToSearch() {
+    const q = query.trim()
+    if (!q) return
+    setQuery('')
+    setOpen(false)
+    setItems([])
+    router.push(`/search?q=${encodeURIComponent(q)}`)
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (!open) return
     if (e.key === 'ArrowDown') {
+      if (!open) return
       e.preventDefault()
       setActiveIdx(i => Math.min(i + 1, items.length - 1))
     } else if (e.key === 'ArrowUp') {
+      if (!open) return
       e.preventDefault()
       setActiveIdx(i => Math.max(i - 1, -1))
-    } else if (e.key === 'Enter' && activeIdx >= 0) {
+    } else if (e.key === 'Enter') {
       e.preventDefault()
-      selectItem(items[activeIdx])
+      if (open && activeIdx >= 0) {
+        selectItem(items[activeIdx])
+      } else {
+        navigateToSearch()
+      }
     } else if (e.key === 'Escape') {
       setOpen(false)
     }
@@ -88,20 +102,28 @@ export function GlobalSearch() {
   return (
     <div ref={containerRef} className="relative flex-1 max-w-sm">
       <div className="relative">
-        <svg
-          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-zinc-400"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-          aria-hidden="true"
+        <button
+          type="button"
+          onClick={navigateToSearch}
+          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-violet-500 transition-colors focus:outline-none"
+          aria-label="Buscar"
+          tabIndex={-1}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 104.5 4.5a7.5 7.5 0 0012.15 12.15z"
-          />
-        </svg>
+          <svg
+            className="size-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 104.5 4.5a7.5 7.5 0 0012.15 12.15z"
+            />
+          </svg>
+        </button>
         <input
           ref={inputRef}
           type="search"
