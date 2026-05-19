@@ -218,7 +218,7 @@ func TestUpsertSet_NewSet_ScrydexSourcePersisted(t *testing.T) {
 	mustUpsertSet(t, repo, &s)
 	cleanupSet(t, pool, code)
 
-	got, err := repo.GetSetByCode(context.Background(), code)
+	got, err := repo.GetSetByCode(context.Background(), code, "en")
 	if err != nil {
 		t.Fatalf("GetSetByCode: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestUpsertSet_ManualSource_NotOverwritten(t *testing.T) {
 	// this assertion should change to require err == nil.
 	if err == nil {
 		// Fix was applied: verify the original data was not changed.
-		got, fetchErr := repo.GetSetByCode(ctx, code)
+		got, fetchErr := repo.GetSetByCode(ctx, code, "en")
 		if fetchErr != nil {
 			t.Fatalf("GetSetByCode after protected upsert: %v", fetchErr)
 		}
@@ -296,7 +296,7 @@ func TestUpsertSet_ManualSource_NotOverwritten(t *testing.T) {
 	} else {
 		// Current behaviour: the error reveals the protection fired.
 		// Verify the original row is intact in the DB.
-		got, fetchErr := repo.GetSetByCode(ctx, code)
+		got, fetchErr := repo.GetSetByCode(ctx, code, "en")
 		if fetchErr != nil {
 			t.Fatalf("GetSetByCode after failed upsert: %v", fetchErr)
 		}
@@ -346,7 +346,7 @@ func TestUpsertSet_LegacySource_UpdatedToScrydex(t *testing.T) {
 		t.Fatalf("upsert legacy → scrydex: %v", err)
 	}
 
-	got, err := repo.GetSetByCode(ctx, code)
+	got, err := repo.GetSetByCode(ctx, code, "en")
 	if err != nil {
 		t.Fatalf("GetSetByCode: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestUpsertSet_Idempotent(t *testing.T) {
 		t.Errorf("ID changed between upserts: first=%s second=%s", firstID, s2.ID)
 	}
 
-	got, err := repo.GetSetByCode(ctx, code)
+	got, err := repo.GetSetByCode(ctx, code, "en")
 	if err != nil {
 		t.Fatalf("GetSetByCode: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestUpsertSet_EmptyImportSource_DefaultsToTCGDexLegacy(t *testing.T) {
 	mustUpsertSet(t, repo, &s)
 	cleanupSet(t, pool, code)
 
-	got, err := repo.GetSetByCode(ctx, code)
+	got, err := repo.GetSetByCode(ctx, code, "en")
 	if err != nil {
 		t.Fatalf("GetSetByCode: %v", err)
 	}
