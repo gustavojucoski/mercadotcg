@@ -149,3 +149,28 @@ export interface AutocompleteItem {
   image_small_url: string
   slug: string
 }
+
+export interface SearchCardResult {
+  id: string
+  name: string
+  name_pt: string | null
+  collector_number: string
+  image_url: string | null
+  rarity: string | null
+  set: {
+    code: string
+    name: string
+    name_pt: string | null
+    language: string
+    release_date: string
+    tcg: string
+  }
+}
+
+export interface SearchResponse {
+  data: SearchCardResult[]
+  total: number
+  page: number
+  limit: number
+  has_more: boolean
+}

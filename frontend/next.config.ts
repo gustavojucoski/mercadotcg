@@ -42,6 +42,18 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'images.pokemontcg.io',
       },
+      // Transição: imagens vindas do Scrydex antes do download para S3.
+      // Remover após re-import completo com --skip-images=false.
+      {
+        protocol: 'https',
+        hostname: 'images.scrydex.com',
+      },
+      // Transição: imagens vindas do Scrydex antes do download para S3.
+      // Remover após re-import completo com --skip-images=false.
+      {
+        protocol: 'https',
+        hostname: 'images.scrydex.com',
+      },
     ],
   },
 };

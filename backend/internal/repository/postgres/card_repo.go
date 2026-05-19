@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1182,4 +1183,156 @@ func (r *CardRepo) AutocompleteCards(ctx context.Context, q, tcg string, limit i
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// ----------------------------------------------------------------------------
+// Search cards — paginated full-catalog search with filters
+// ----------------------------------------------------------------------------
+
+// SearchCardsParams holds all parameters for the paginated card search endpoint.
+type SearchCardsParams struct {
+	Q      string // free-text search (escaped ILIKE pattern, already truncated)
+	Sort   string // "name" | "release_date" | "collector_number"
+	Order  string // "asc" | "desc"
+	TCG    string
+	Rarity string // escaped ILIKE pattern
+	Lang   string
+	Page   int
+	Limit  int
+}
+
+// SearchCardResult is the read-only projection returned by SearchCards.
+type SearchCardResult struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	NamePT          string  `json:"name_pt,omitempty"`
+	CollectorNumber string  `json:"collector_number"`
+	ImageURL        string  `json:"image_url,omitempty"`
+	Rarity          string  `json:"rarity,omitempty"`
+	Set             SetInfo `json:"set"`
+}
+
+// SetInfo carries the set fields embedded in SearchCardResult.
+type SetInfo struct {
+	Code        string     `json:"code"`
+	Name        string     `json:"name"`
+	NamePT      string     `json:"name_pt,omitempty"`
+	Language    string     `json:"language"`
+	ReleaseDate *time.Time `json:"release_date,omitempty"`
+	TCG         string     `json:"tcg"`
+}
+
+// SearchCards executes a paginated card search with optional text, TCG, rarity,
+// and language filters. It returns the result page, the total matching row count,
+// and any error.
+//
+// The caller is responsible for escaping ILIKE patterns (escapeLikePattern) and
+// enforcing the offset depth limit before calling this method.
+func (r *CardRepo) SearchCards(ctx context.Context, p SearchCardsParams) ([]SearchCardResult, int, error) {
+	// Build WHERE clause and positional args incrementally.
+	// $1 = LIMIT, $2 = OFFSET; filter args are appended starting at $3.
+	args := make([]any, 0, 8)
+	args = append(args, p.Limit, (p.Page-1)*p.Limit)
+
+	var where strings.Builder
+	where.WriteString("WHERE 1=1\n")
+
+	if p.Q != "" {
+		args = append(args, "%"+p.Q+"%")
+		n := len(args)
+		fmt.Fprintf(&where, "  AND (c.name ILIKE $%d ESCAPE '\\' OR c.name_pt ILIKE $%d ESCAPE '\\')\n", n, n)
+	}
+	if p.TCG != "" {
+		args = append(args, p.TCG)
+		fmt.Fprintf(&where, "  AND cs.tcg = $%d\n", len(args))
+	}
+	if p.Rarity != "" {
+		args = append(args, "%"+p.Rarity+"%")
+		fmt.Fprintf(&where, "  AND c.rarity ILIKE $%d ESCAPE '\\'\n", len(args))
+	}
+	if p.Lang != "" {
+		args = append(args, p.Lang)
+		fmt.Fprintf(&where, "  AND cs.language = $%d\n", len(args))
+	}
+
+	// All ORDER BY branches are from a validated allowlist — no raw user input
+	// is interpolated into the query string.
+	var orderBy string
+	switch p.Sort {
+	case "release_date":
+		if p.Order == "desc" {
+			orderBy = "cs.release_date DESC NULLS LAST, c.name ASC, c.id ASC"
+		} else {
+			orderBy = "cs.release_date ASC NULLS LAST, c.name ASC, c.id ASC"
+		}
+	case "collector_number":
+		if p.Order == "desc" {
+			orderBy = "NULLIF(regexp_replace(c.collector_number, '[^0-9]', '', 'g'), '')::int DESC NULLS LAST, c.collector_number DESC, c.id ASC"
+		} else {
+			orderBy = "NULLIF(regexp_replace(c.collector_number, '[^0-9]', '', 'g'), '')::int NULLS LAST, c.collector_number ASC, c.id ASC"
+		}
+	default: // "name"
+		if p.Order == "desc" {
+			orderBy = "c.name DESC, c.id ASC"
+		} else {
+			orderBy = "c.name ASC, c.id ASC"
+		}
+	}
+
+	query := fmt.Sprintf(`
+SELECT
+    c.id::text,
+    c.name::text,
+    COALESCE(c.name_pt, ''),
+    COALESCE(c.collector_number, ''),
+    COALESCE(c.image_small_url, ''),
+    COALESCE(c.rarity, ''),
+    cs.code,
+    cs.name::text,
+    COALESCE(cs.name_pt, ''),
+    cs.language::text,
+    cs.release_date,
+    COALESCE(cs.tcg, 'pokemon'),
+    COUNT(*) OVER() AS total
+FROM cards c
+JOIN card_sets cs ON cs.id = c.set_id
+%sORDER BY %s
+LIMIT $1 OFFSET $2`, where.String(), orderBy)
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("searchCards: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SearchCardResult
+	var total int
+	for rows.Next() {
+		var res SearchCardResult
+		if err := rows.Scan(
+			&res.ID,
+			&res.Name,
+			&res.NamePT,
+			&res.CollectorNumber,
+			&res.ImageURL,
+			&res.Rarity,
+			&res.Set.Code,
+			&res.Set.Name,
+			&res.Set.NamePT,
+			&res.Set.Language,
+			&res.Set.ReleaseDate,
+			&res.Set.TCG,
+			&total,
+		); err != nil {
+			return nil, 0, fmt.Errorf("searchCards scan: %w", err)
+		}
+		out = append(out, res)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("searchCards rows: %w", err)
+	}
+	if out == nil {
+		out = []SearchCardResult{}
+	}
+	return out, total, nil
 }
